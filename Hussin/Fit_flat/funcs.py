@@ -63,35 +63,11 @@ def expo_function(xs, *params):
 
     return ys
 
-def three_exp_func(xs, *params):
-   return
 
-
-
-"""
-def flat_me(xs,*params):
-    knee_off,k1, d1, d2,f_flat  = params
-    ys = np.where(
-    np.log10(xs) < f_flat,
-    knee_off - np.log10(10**(d1 * (np.log10(xs) - k1)) + 10**(d2 * (np.log10(xs) - k1))),
-    knee_off - np.log10(10**(d1 * (f_flat - k1)) + 10**(d2 * (f_flat - k1)))
-    )
-    return ys
-
-
-def flat_incl(xs, *params):
-    offset, f, d1, d2, knee_param = params # f = flat_fr_logged, k = knee_power/(1+((-d1)/d2)), d1 = exp1, d2 = exp2-d1
-    ys = offset + np.log10(10**(-d1*(np.log10(xs)-f)) + 10**(d2*(np.log10(xs)-f))) - np.log10(10**(d2*(np.log10(xs)-f)) + 1/(10**(knee_param)))
-    return ys    
-
-
-"""
-
-def flat_shonali(xs, *params):
-    offset,knee_param, d1, d2,f  = params
-    k1 = -knee_param   
-    k2 = -(k1 + f)
-    ys = offset - np.log10( (10**(-d1 * (np.log10(xs)+ k1)) + 10**(-d2*(np.log10(xs)+k1)))) +np.log10(10**(-d2*(np.log(xs)+k1)) + 10**-k2)
+####### Main flattening function with 3 exponents ###############
+def new_function_with_three_exponents(xs, *params):
+    knee_off, z1, z2, d1, d2, d3 = params
+    ys = knee_off + np.log10(10**(d1*(z1 - np.log10(xs))) + 10**(d2*(np.log10(xs)-z1))) - np.log10(10**(d2*(z2 - np.log10(xs))) + 10**(d3*(np.log10(xs)-z2)))
     return ys
 
 
@@ -219,11 +195,11 @@ def get_ap_func(aperiodic_mode):
     if aperiodic_mode == 'fixed':
         ap_func = expo_nk_function
     elif aperiodic_mode == 'knee':
-        ap_func = new_function
+        ap_func = two_exp_func
     elif aperiodic_mode == 'knee_1exp':
         ap_func = expo_function
     elif aperiodic_mode == 'knee_flat':
-        ap_func = flat_shonali
+        ap_func = new_function_with_three_exponents
     
     else:
         raise ValueError("Requested aperiodic mode not understood.")
@@ -252,11 +228,11 @@ def infer_ap_func(aperiodic_params):
 
     if len(aperiodic_params) == 2:
         aperiodic_mode = 'fixed'
-    elif len(aperiodic_params) == 4:
+    elif len(aperiodic_params) ==4:
         aperiodic_mode = 'knee'
     elif len(aperiodic_params) == 3:
         aperiodic_mode = 'knee_1exp'
-    elif len(aperiodic_params) == 5:
+    elif len(aperiodic_params) == 6:
         aperiodic_mode = 'knee_flat'
 
     
