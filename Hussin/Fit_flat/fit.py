@@ -62,7 +62,7 @@ from copy import deepcopy
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy.optimize import curve_fit
-
+from scipy.signal import find_peaks
 from fooof.core.utils import unlog
 from fooof.core.items import OBJ_DESC
 from fooof.core.info import get_indices
@@ -83,6 +83,7 @@ from fooof.utils.params import compute_gauss_std
 from fooof.data import FOOOFSettings, FOOOFRunModes, FOOOFMetaData, FOOOFResults
 from fooof.data.conversions import model_to_dataframe
 from fooof.sim.gen import gen_freqs, gen_aperiodic, gen_periodic, gen_model
+from statsmodels.tools.eval_measures import aic_sigma
 
 ###################################################################################################
 ###################################################################################################
@@ -185,8 +186,7 @@ class FOOOF():
         # By default, aperiodic fitting is unbound, but can be restricted here, if desired
         #   Even if fitting without knee, leave bounds for knee (they are dropped later)
         #    offset,knee_param, d1, d2,f  = params
-
-        self._ap_bounds = ((-np.inf,0 ,-np.inf ,-np.inf,0), (np.inf,np.inf,0, 0, np.inf))
+        self._ap_bounds = ((-np.inf,0,0, 0,0,0), (np.inf,np.inf,np.inf,np.inf,np.inf, np.inf))
         # Threshold for how far a peak has to be from edge to keep.
         #   This is defined in units of gaussian standard deviation
         self._bw_std_edge = 1.0
@@ -480,6 +480,7 @@ class FOOOF():
                                    "values in the data, which preclude model fitting.")
 
             # Fit the aperiodic component
+
             self.aperiodic_params_ = self._robust_ap_fit(self.freqs, self.power_spectrum)
             self._ap_fit = gen_aperiodic(self.freqs, self.aperiodic_params_)
 
@@ -487,7 +488,7 @@ class FOOOF():
             self._spectrum_flat = self.power_spectrum - self._ap_fit
 
             # Find peaks, and fit them with gaussians
-            self.gaussian_params_ = self._fit_peaks2(np.copy(self._spectrum_flat))
+            self.gaussian_params_ = self._fit_peaks(np.copy(self._spectrum_flat))
 
             # Calculate the peak fit
             #   Note: if no peaks are found, this creates a flat (all zero) peak fit
@@ -495,7 +496,7 @@ class FOOOF():
 
             # Create peak-removed (but not flattened) power spectrum
             self._spectrum_peak_rm = self.power_spectrum - self._peak_fit
-
+            self.auto_aperiodic(self.freqs, self._spectrum_peak_rm)
             # Run final aperiodic fit on peak-removed power spectrum
             #   This overwrites previous aperiodic fit, and recomputes the flattened spectrum
             self.aperiodic_params_ = self._simple_ap_fit(self.freqs, self._spectrum_peak_rm)
@@ -939,7 +940,31 @@ class FOOOF():
             print(gen_width_warning_str(self.freq_res, self.peak_width_limits[0]))
 
 
+    
 #################### new ap function with 3 options ###############################
+    def auto_aperiodic(self, freqs, power_spectrum):
+        modes = ['fixed', 'knee_1exp' ,'knee' , 'knee_flat' ]
+        n_params = [2, 3, 4, 6]
+        AICs = []
+        for i, mode in enumerate(modes):
+            self.aperiodic_mode = mode
+            print("current mode: ", mode)
+            ap_params = self._simple_ap_fit(freqs, power_spectrum)
+            residuals = power_spectrum - get_ap_func(self.aperiodic_mode)(freqs, *ap_params)
+            
+            # Calculate the variance estimate (sigma^2)
+            sigma2 = np.mean(residuals**2)
+            n_pnts = len(power_spectrum)
+            nobs = n_params[i]
+            # Calculate AIC using sigma2, nobs, and df_modelwc
+            aic = aic_sigma(sigma2, n_pnts, nobs)
+            AICs.append(aic)
+        print(AICs)
+        print(f"lowest AIC is for mode: {modes[np.argmin(AICs)]}")
+        print(f"lowest AIC is : {min(AICs)}")
+        self.aperiodic_mode = modes[np.argmin(AICs)]
+        
+
     
     def _simple_ap_fit(self, freqs, power_spectrum):
         """
@@ -971,10 +996,6 @@ class FOOOF():
 
             # Collect together guess parameters
             guess = np.array(off_guess + kne_guess + exp_guess)
-            print(guess.shape)
-            print(ap_bounds[0])
-            print(ap_bounds[1])
-            print(ap_bounds)
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -1002,15 +1023,15 @@ class FOOOF():
             freq_res = freqs[1] - freqs[0]
 
             start_index1 = round(13 / freq_res)
-            end_index1 = round(46 / freq_res)
+            end_index1 = round(80 / freq_res)
             f1 = freqs[start_index1:end_index1]
             u1 = np.log10(f1)
             p1 = power_spectrum[start_index1:end_index1]
             guess_d1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
             off1 = (guess_d1[0] * u1[0]) + p1[0]
 
-            start_index2 = round(75 / freq_res)
-            end_index2 = round(120 / freq_res)
+            start_index2 = round(120 / freq_res)
+            end_index2 = round(400 / freq_res)
             f2 = freqs[start_index2:end_index2]
             u2 = np.log10(f2)
             p2 = power_spectrum[start_index2:end_index2]
@@ -1019,7 +1040,7 @@ class FOOOF():
             z_guess = [(off2 - off1) / (guess_d2[0] - guess_d1[0])]
             knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess[0]))]
             guess = np.array(knee_off_guess + z_guess + guess_d1 + guess_d2)
-            ap_bounds = ((-np.inf, 0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
+            ap_bounds = ((-np.inf,0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -1050,7 +1071,7 @@ class FOOOF():
             u1 = np.log10(f1)
             p1 = power_spectrum[start_index1:end_index1]
             guess_d1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
-            new_guess_d1 = [-1 * np.abs(guess_d1[0])]
+            new_guess_d1 = [np.abs(guess_d1[0])]
             off1 = (guess_d1[0] * u1[0]) + p1[0]
 
             start_index2 = round(80 / freq_res)
@@ -1059,16 +1080,24 @@ class FOOOF():
             u2 = np.log10(f2)
             p2 = power_spectrum[start_index2:end_index2]
             guess_d2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
-            new_guess_d2 = [-1 * np.abs(guess_d2[0])]
+            new_guess_d2 = [np.abs(guess_d2[0])]
             off2 = (guess_d2[0] * u2[0] + p2[0])
             z_guess = (off2 - off1) / (guess_d2[0] - guess_d1[0])
-            z_guess = [np.clip(z_guess, 0, 2.3)]
-            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess[0]))]
-            flat_fr_logged_guess = [2.5]  # Adjust this initial guess if needed
-                    
-            guess = np.array(knee_off_guess + z_guess + new_guess_d1 + new_guess_d2 + flat_fr_logged_guess) 
-            print(guess)
-            print(ap_bounds)
+            k1_guess = [np.abs(np.clip(z_guess, 0, 2.3))]
+            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess))]
+            
+            start_index3 = round(320 / freq_res)
+            end_index3 = round(500 / freq_res)
+            f3 = freqs[start_index3:end_index3]
+            u3 = np.log10(f3)
+            p3 = power_spectrum[start_index3:end_index3]
+            guess_d3 = [(p3[-1] - p3[0]) / (u3[0] - u3[-1])]
+            new_guess_d3 = [np.abs(guess_d3[0])]
+            
+            
+            flat_fr_logged_guess = [2.3]  # Adjust this initial guess if needed
+            k2_guess = [ new_guess_d2[0] * (flat_fr_logged_guess[0] +k1_guess[0])]
+            guess = np.array(knee_off_guess + k1_guess+ flat_fr_logged_guess + new_guess_d1 + new_guess_d2 + new_guess_d3  ) 
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -1214,7 +1243,8 @@ class FOOOF():
 
         # Get bounds for aperiodic fitting, dropping knee bound if not set to fit knee
         if self.aperiodic_mode == 'knee':
-            ap_bounds =((-np.inf, 0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
+            ap_bounds = ((-np.inf, 0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
+
 
         elif self.aperiodic_mode == 'knee_flat':
             ap_bounds = self._ap_bounds
@@ -1257,8 +1287,8 @@ class FOOOF():
         # Initialize matrix of guess parameters for gaussian fitting
         guess = np.empty([0, 3])
         self.std_limits =  np.empty([0, 2])
-
-
+        self.cf_bounds = np.empty([0, 2])
+        
         # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
         #   Stopping procedures: limit on # of peaks, or relative or absolute height thresholds
         while len(guess) < self.max_n_peaks:
@@ -1313,14 +1343,16 @@ class FOOOF():
                 guess_std = self._gauss_std_limits[1]
             
             self.std_limits = np.vstack((self.std_limits, self._gauss_std_limits))
+            self.cf_bounds = np.vstack((self.cf_bounds, self.freq_range))
+
             # Collect guess parameters and subtract this guess gaussian from the data
             guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
             peak_gauss = gaussian_function(self.freqs, guess_freq, guess_height, guess_std)
             flat_iter = flat_iter - peak_gauss
 
         # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess, self.std_limits = self._drop_peak_cf(guess)
-        guess ,self.std_limits = self._drop_peak_overlap(guess)
+        guess, self.std_limits , self.cf_bounds = self._drop_peak_cf(guess)
+        guess ,self.std_limits , self.cf_bounds = self._drop_peak_overlap(guess)
 
         # If there are peak guesses, fit the peaks, and sort results
         if len(guess) > 0:
@@ -1359,11 +1391,13 @@ class FOOOF():
         sgamma_range = [25, 40]
         electronic_noise_range = [45, 55]
         self.std_limits = np.empty([0 , 2])
+        self.cf_bounds = np.empty([0 , 2])
+
         fgamma_range =[50, 100]
         swr_range = [120, 200]
         list_of_ranges = [theta_range, sgamma_range, fgamma_range, swr_range]
-        list_of_thresholds = [1, 1, 2, 2]  # Adjusted thresholds based on typical SNR
-        list_of_peak_widths = [[0.5, 3], [2, 30], [2.5, 30], [10,100]]
+        list_of_thresholds = [1, 1, 1.25, 1.5]  # Adjusted thresholds based on typical SNR
+        list_of_peak_widths = [[0.5, 3], [2, 10], [2.5, 30], [2.5,30]]
         # Initialize matrix of guess parameters for gaussian fitting
         guess = np.empty([0, 3])
         # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
@@ -1372,35 +1406,39 @@ class FOOOF():
             current_range_indices = (self.freqs >= current_range[0]) & (self.freqs <= current_range[1])
             current_band = flat_iter[current_range_indices]
             current_freqs = self.freqs[current_range_indices]
+            max_ind = np.argmax(current_band)
+            max_height = current_band[max_ind]
+
             i=0
             while i<1:
-                # Find candidate peak - the maximum point of the flattened spectrum
-                max_ind = np.argmax(current_band)
-                max_height = current_band[max_ind]
-
-                # Stop searching for peaks once height drops below height threshold
-                if max_height <= current_threshold * np.std(current_band):
+                            # Find peaks in the current_band
+                peaks, _ = find_peaks(current_band, height=current_threshold * np.std(current_band))
+                
+                # Check if peaks are found
+                if len(peaks) == 0:
                     break
-
-                # Set the guess parameters for gaussian fitting, specifying the mean and height
-                guess_freq = current_freqs[max_ind]
-                guess_height = max_height
-              # Halt fitting process if candidate peak drops below minimum height
+                
+                # Select the peak with the maximum height
+                peak_index = peaks[np.argmax(current_band[peaks])]
+                
+                # Retrieve the corresponding frequency and height
+                guess_freq = current_freqs[peak_index]
+                guess_height = current_band[peak_index]
+                
+                # Halt fitting process if candidate peak drops below minimum height
                 if not guess_height > self.min_peak_height:
-                    break          
-
+                    break
+                
                 # Data-driven first guess at standard deviation
                 # Find half height index on each side of the center frequency
-                half_height = 0.5 * max_height
-                le_ind = next((val for val in range(max_ind - 1, 0, -1) if current_band[val] <= half_height), None)
-                ri_ind = next((val for val in range(max_ind + 1, len(current_band), 1) if current_band[val] <= half_height), None)
+                half_height = 0.5 * guess_height
+                le_ind = next((val for val in range(peak_index - 1, 0, -1) if current_band[val] <= half_height), None)
+                ri_ind = next((val for val in range(peak_index + 1, len(current_band), 1) if current_band[val] <= half_height), None)
 
                 # Guess bandwidth procedure: estimate the width of the peak
                 try:
                     # Get an estimated width from the shortest side of the peak
-                    # We grab shortest to avoid estimating very large values from overlapping peaks
-                    # Grab the shortest side, ignoring a side if the half max was not found
-                    short_side = min([abs(ind - max_ind) for ind in [le_ind, ri_ind] if ind is not None])
+                    short_side = min([abs(ind - peak_index) for ind in [le_ind, ri_ind] if ind is not None])
 
                     # Use the shortest side to estimate full-width, half max (converted to Hz)
                     # and use this to estimate that guess for gaussian standard deviation
@@ -1417,17 +1455,21 @@ class FOOOF():
                     guess_std = current_width[0]
                 if guess_std > current_width[1]:
                     guess_std = current_width[1]
+
+
                 self.std_limits = np.vstack((self.std_limits,current_width))
+                self.cf_bounds = np.vstack((self.cf_bounds, current_range))
                 # Collect guess parameters and subtract this guess gaussian from the data
                 guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
                 peak_gauss = gaussian_function(current_freqs, guess_freq, guess_height, guess_std)
                 current_band = current_band - peak_gauss
                 flat_iter[current_range_indices] = current_band
-                i+=1
+                i += 1
+
 
         # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess, self.std_limits = self._drop_peak_cf(guess)
-        guess ,  self.std_limits  = self._drop_peak_overlap(guess)
+        guess, self.std_limits , self.cf_bounds = self._drop_peak_cf(guess)
+        guess ,  self.std_limits , self.cf_bounds = self._drop_peak_overlap(guess)
         # If there are peak guesses, fit the peaks, and sort results
         if len(guess) > 0:
             gaussian_params = self._fit_peak_guess(guess)
@@ -1671,15 +1713,14 @@ class FOOOF():
         num_peaks = guess.shape[0]
     
         # Initialize self.std_limits if it is empty
-        print("std_limits are, " , self.std_limits)
                 # Debugging output to check the input sizes
         if self.std_limits.shape[0] != num_peaks:
             raise ValueError("The number of peaks in 'guess' does not match the number of std limits provided.")
         # Set the bounds for CF, enforce positive height value, and set bandwidth limits
-        lo_bound = [[peak[0] - self._cf_bound * peak[2], 0, std_lim[0]] ## Default was 2* self.cf_bound
-                    for peak, std_lim in zip(guess, self.std_limits)]
-        hi_bound = [[peak[0] + self._cf_bound * peak[2], np.inf, std_lim[1]]
-                    for peak, std_lim in zip(guess, self.std_limits)]
+        lo_bound = [[cf[0], 0, std_lim[0]] ## Default was 2* self.cf_bound
+                    for cf, peak, std_lim in zip(self.cf_bounds , guess, self.std_limits)]
+        hi_bound = [[cf[1], np.inf, std_lim[1]]
+                    for cf, peak, std_lim in zip(self.cf_bounds , guess, self.std_limits)]
 
         
         
@@ -1791,12 +1832,13 @@ class FOOOF():
 
         # Ensure self.std_limits is a numpy array
         self.std_limits = np.array(self.std_limits)
-
+        self.cf_bounds = np.array(self.cf_bounds)
         # Drop peaks that fail the center frequency edge criterion
         guess = guess[keep_peak]
         self.std_limits = self.std_limits[keep_peak]
+        self.cf_bounds = self.cf_bounds[keep_peak]
 
-        return guess, self.std_limits
+        return guess, self.std_limits , self.cf_bounds
 
 
     def _drop_peak_overlap(self, guess):
@@ -1844,6 +1886,7 @@ class FOOOF():
         sorted_indices = np.argsort(guess[:, 0])
         guess = guess[sorted_indices]
         self.std_limits = self.std_limits[sorted_indices]
+        self.cf_bounds = self.cf_bounds[sorted_indices]
 
         # Debugging output to check the sorted guess and std_limits
         # Calculate standard deviation bounds for checking amount of overlap
@@ -1868,6 +1911,8 @@ class FOOOF():
         keep_peak = np.array([ind not in drop_inds for ind in range(len(guess))], dtype=bool)
         guess = guess[keep_peak]
         self.std_limits = self.std_limits[keep_peak]
+        self.cf_bounds = self.cf_bounds[keep_peak]
+
         # Check if the dimensions are correct
         if guess.ndim != 2 or guess.shape[1] != 3:
             raise ValueError("Expected 'guess' to be a 2D array with shape [n_peaks, 3].")
@@ -1879,7 +1924,7 @@ class FOOOF():
             raise ValueError("The number of peaks in 'guess' does not match the number of std limits provided.")
 
         ##############edit this return later you don't need to do this #################
-        return guess, self.std_limits 
+        return guess, self.std_limits , self.cf_bounds
 
 
 
