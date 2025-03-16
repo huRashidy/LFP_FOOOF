@@ -46,8 +46,9 @@ We made the following critical modifications to the FOOOF toolbox:
 
 ## How to Use This Repository
 
-### 1. Clone the Repository
 ```bash
+
+### 1. Clone the Repository
 git clone https://github.com/your-username/your-repo.git
 cd your-repo
 
