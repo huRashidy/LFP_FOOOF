@@ -17,7 +17,7 @@ The repository is organized as follows:
 │   ├── funcs.py              # Modified helper functions (originally in specparam/core)
 │   └── fit.py                # Modified fitting functionality (originally in specparam/objs)
 ├── README.md                 # This file
----
+'''
 
 ## Key Modifications to the FOOOF Toolbox
 
