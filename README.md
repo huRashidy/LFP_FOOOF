@@ -3,10 +3,10 @@
 This repository contains the code and data modifications used in the study **"Aperiodicity in Mouse CA1 and DG Power Spectra"**. The study focuses on analyzing the aperiodic components of hippocampal power spectra in mice, specifically in the CA1 and dentate gyrus (DG) regions. We modified the open-source [FOOOF toolbox](https://github.com/fooof-tools/fooof) to improve the assessment of periodic and aperiodic components in electrophysiological signals.
 
 
-## Repository Structure
+- ## Repository Structure
 
 The repository is organized as follows:
-.
+
 ├── Fitting examples/ # Example data and scripts for fitting
 │ ├── data/ # Example datasets
 │ │ ├── CA1_example.mat # CA1 LFP recording example
