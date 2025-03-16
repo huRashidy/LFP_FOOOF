@@ -55,10 +55,40 @@ cd your-repo
 ### 2. Install Dependencies
 Ensure you have the following dependencies installed:
 Python 3.7+
+FOOOF
 NumPy
 SciPy
 Matplotlib (for visualization)
 
+### 3. Replace the FOOOF Files
+
+To use the modified FOOOF toolbox, replace the original files in the FOOOF library with the modified versions provided in this repository. Follow these steps:
+
+1. **Locate the FOOOF Library**:
+   - If you have installed the FOOOF library, you can find its location by running the following command in Python:
+     ```python
+     import specparam
+     print(specparam.__file__)
+     ```
+   - This will print the path to the FOOOF library. Navigate to the parent directory of this path.
+
+2. **Replace `fit.py`**:
+   - Copy the modified `fit.py` file from `FOOOF codes/fit.py` in this repository.
+   - Paste it into the `objs` folder of the FOOOF library, replacing the original file:
+     ```
+     FOOOF/specparam/objs/fit.py
+     ```
+
+3. **Replace `funcs.py`**:
+   - Copy the modified `funcs.py` file from `FOOOF codes/funcs.py` in this repository.
+   - Paste it into the `core` folder of the FOOOF library, replacing the original file:
+     ```
+     FOOOF/specparam/core/funcs.py
+     ```
+
+4. **Verify the Changes**:
+   - After replacing the files, restart your Python environment or kernel to ensure the changes take effect.
+   - Test the modified FOOOF toolbox by running the example notebook provided in the `Fitting examples/` folder.
 
 
 ## Related Publication
