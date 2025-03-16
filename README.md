@@ -56,5 +56,4 @@ Matplotlib (for visualization)
 
 ## Related Publication
 This work is part of the study "Aperiodicity in Mouse CA1 and DG Power Spectra". For more details, refer to the preprint link 
-https://www.biorxiv.org/content/10.1101/2025.01.30.635678v1 
-
+[Biorxiv preprint]([https://github.com/fooof-tools/fooof)](https://www.biorxiv.org/content/10.1101/2025.01.30.635678v1)
