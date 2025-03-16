@@ -7,18 +7,16 @@ This repository contains the code and data modifications used in the study **"Ap
 ## Repository Structure
 
 The repository is organized as follows:
-├── /Fitting examples/
-│  ├── data 
-|   └── CA1_example.mat
-|   └── DG_example.mat
-│  └── Example_fitting.ipynb  #Example for analyzing the CA1 and DG LFP recordings with different aperiodic functions and how to use FOOOF with it  
-├── FOOOF codes/ # Modified FOOOF toolbox
-│  └── funcs.py # found in specparam/core
-│  └── fit.py # found in specparam/objs
-├── README.md # This file
-
-
-
+.
+├── Fitting examples/          # Example data and scripts for fitting
+│   ├── data/                 # Example datasets
+│   │   ├── CA1_example.mat   # CA1 LFP recording example
+│   │   └── DG_example.mat    # DG LFP recording example
+│   └── Example_fitting.ipynb # Jupyter notebook for analyzing CA1 and DG LFP recordings
+├── FOOOF codes/              # Modified FOOOF toolbox
+│   ├── funcs.py              # Modified helper functions (originally in specparam/core)
+│   └── fit.py                # Modified fitting functionality (originally in specparam/objs)
+├── README.md                 # This file
 ---
 
 ## Key Modifications to the FOOOF Toolbox
