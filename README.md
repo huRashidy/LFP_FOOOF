@@ -3,22 +3,20 @@
 This repository contains the code and data modifications used in the study **"Aperiodicity in Mouse CA1 and DG Power Spectra"**. The study focuses on analyzing the aperiodic components of hippocampal power spectra in mice, specifically in the CA1 and dentate gyrus (DG) regions. We modified the open-source [FOOOF toolbox](https://github.com/fooof-tools/fooof) to improve the assessment of periodic and aperiodic components in electrophysiological signals.
 
 
-
 ## Repository Structure
 
 The repository is organized as follows:
 .
-├── Fitting examples/          # Example data and scripts for fitting
-│   ├── data/                 # Example datasets
-│   │   ├── CA1_example.mat   # CA1 LFP recording example
-│   │   └── DG_example.mat    # DG LFP recording example
-│   └── Example_fitting.ipynb # Jupyter notebook for analyzing CA1 and DG LFP recordings
-├── FOOOF codes/              # Modified FOOOF toolbox
-│   ├── funcs.py              # Modified helper functions (originally in specparam/core)
-│   └── fit.py                # Modified fitting functionality (originally in specparam/objs)
-├── README.md                 # This file
+├── Fitting examples/ # Example data and scripts for fitting
+│ ├── data/ # Example datasets
+│ │ ├── CA1_example.mat # CA1 LFP recording example
+│ │ └── DG_example.mat # DG LFP recording example
+│ └── Example_fitting.ipynb # Jupyter notebook for analyzing CA1 and DG LFP recordings
+├── FOOOF codes/ # Modified FOOOF toolbox
+│ ├── funcs.py # Modified helper functions (originally in specparam/core)
+│ └── fit.py # Modified fitting functionality (originally in specparam/objs)
+├── README.md # This file
 
-'''
 
 ## Key Modifications to the FOOOF Toolbox
 
