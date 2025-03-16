@@ -12,6 +12,7 @@ The repository is organized as follows:
 │ ├── data/ # Example datasets
 
 │ │ ├── CA1_example.mat # CA1 LFP recording example
+
 │ │ └── DG_example.mat # DG LFP recording example
 
 │ └── Example_fitting.ipynb # Jupyter notebook for analyzing CA1 and DG LFP recordings
