@@ -90,6 +90,7 @@ To use the modified FOOOF toolbox, replace the original files in the FOOOF libra
    - After replacing the files, restart your Python environment or kernel to ensure the changes take effect.
    - Test the modified FOOOF toolbox by running the example notebook provided in the `Fitting examples/` folder.
 
+```bash
 
 ## Related Publication
 This work is part of the study "Aperiodicity in Mouse CA1 and DG Power Spectra". For more details, refer to the preprint link 
