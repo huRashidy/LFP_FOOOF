@@ -58,7 +58,7 @@ Methods without defined docstrings import docs at runtime, from aliased external
 
 import warnings
 from copy import deepcopy
-
+import scipy
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy.optimize import curve_fit
@@ -76,6 +76,7 @@ from fooof.core.errors import (FitError, NoModelError, DataError,
                                NoDataError, InconsistentDataError)
 from fooof.core.strings import (gen_settings_str, gen_results_fm_str,
                                 gen_issue_str, gen_width_warning_str)
+from fooof.utils import  interpolate_spectrum
 
 from fooof.plts.fm import plot_fm
 from fooof.utils.data import trim_spectrum
@@ -161,7 +162,7 @@ class FOOOF():
     """
     # pylint: disable=attribute-defined-outside-init
 
-    def __init__(self, peak_width_limits=(0.5, 12.0), max_n_peaks=np.inf, min_peak_height=0.0,
+    def __init__(self, peak_width_limits=(0.5, 12.0), max_n_peaks=np.inf, min_peak_height=0.01,
                  peak_threshold=2.0, aperiodic_mode='fixed', verbose=True):
         """Initialize object with desired settings."""
 
@@ -180,28 +181,28 @@ class FOOOF():
         # Guess parameters for aperiodic fitting, [offset, knee, exponent]
         #   If offset guess is None, the first value of the power spectrum is used as offset guess
         #   If exponent guess is None, the abs(log-log slope) of first & last points is used
-        self._ap_guess = (None, 0, None)
+        self._ap_guess = (None, 4, None)
         # Bounds for aperiodic fitting, as: ((offset_low_bound, knee_low_bound, exp_low_bound),
         #                                    (offset_high_bound, knee_high_bound, exp_high_bound))
         # By default, aperiodic fitting is unbound, but can be restricted here, if desired
         #   Even if fitting without knee, leave bounds for knee (they are dropped later)
-        #    offset,knee_param, d1, d2,f  = params
+        #    offset,knee_param, exp1, exp2,f  = params
         self._ap_bounds = ((-np.inf,0,0, 0,0,0), (np.inf,np.inf,np.inf,np.inf,np.inf, np.inf))
         # Threshold for how far a peak has to be from edge to keep.
         #   This is defined in units of gaussian standard deviation
         self._bw_std_edge = 1.0
         # Degree of overlap between gaussians for one to be dropped
         #   This is defined in units of gaussian standard deviation
-        self._gauss_overlap_thresh = 0.75
+        self._gauss_overlap_thresh = 0.7
         # Parameter bounds for center frequency when fitting gaussians, in terms of +/- std dev
         self._cf_bound = 1.5
         # The error metric to calculate, post model fitting. See `_calc_error` for options
         #   Note: this is for checking error post fitting, not an objective function for fitting
-        self._error_metric = 'MAE'
+        self._error_metric = 'AP'
 
         ## PRIVATE CURVE_FIT SETTINGS
         # The maximum number of calls to the curve fitting function
-        self._maxfev = 500
+        self._maxfev = 5000
         # The tolerance setting for curve fitting (see scipy.curve_fit - ftol / xtol / gtol)
         #   Here reduce tolerance to speed fitting. Set value to 1e-8 to match curve_fit default
         self._tol = 0.00001
@@ -308,7 +309,7 @@ class FOOOF():
             self._peak_fit = None
 
 
-    def add_data(self, freqs, power_spectrum, freq_range=None, clear_results=True):
+    def add_data(self, freqs, power_spectrum, freq_range=None, clear_results=True, knee_fix=None, exp1_fix=None, exp2_fix=None, off_fix=None, off_pr=0.0001, knee_pr=0.0001, exp1_pr=0.0001, exp2_pr=0.0001):
         """Add data (frequencies, and power spectrum values) to the current object.
 
         Parameters
@@ -339,6 +340,19 @@ class FOOOF():
 
         self.freqs, self.power_spectrum, self.freq_range, self.freq_res = \
             self._prepare_data(freqs, power_spectrum, freq_range, 1)
+
+        ##added###############
+        self.off_fix = off_fix
+        self.knee_fix = knee_fix
+        self.exp1_fix = exp1_fix
+        self.exp2_fix = exp2_fix
+        
+        self.off_pr = off_pr
+        self.knee_pr = knee_pr
+        self.exp1_pr = exp1_pr
+        self.exp2_pr = exp2_pr
+        ##added###############
+        
 
 
     def add_settings(self, fooof_settings):
@@ -427,6 +441,7 @@ class FOOOF():
         self.print_results(concise=False)
 
 
+
     def fit(self, freqs=None, power_spectrum=None, freq_range=None):
         """Fit the full power spectrum as a combination of periodic and aperiodic components.
 
@@ -450,16 +465,16 @@ class FOOOF():
         -----
         Data is optional, if data has already been added to the object.
         """
-
         # If freqs & power_spectrum provided together, add data to object.
         if freqs is not None and power_spectrum is not None:
             self.add_data(freqs, power_spectrum, freq_range)
         # If power spectrum provided alone, add to object, and use existing frequency data
         #   Note: be careful passing in power_spectrum data like this:
         #     It assumes the power_spectrum is already logged, with correct freq_range
+        
         elif isinstance(power_spectrum, np.ndarray):
             self.power_spectrum = power_spectrum
-
+        
         # Check that data is available
         if not self.has_data:
             raise NoDataError("No data available to fit, can not proceed.")
@@ -477,10 +492,11 @@ class FOOOF():
             if not self._check_data:
                 if np.any(np.isinf(self.power_spectrum)) or np.any(np.isnan(self.power_spectrum)):
                     raise FitError("Model fitting was skipped because there are NaN or Inf "
-                                   "values in the data, which preclude model fitting.")
+                                "values in the data, which preclude model fitting.")
 
             # Fit the aperiodic component
-
+            self.current_ap_fit_params = None #added
+            self.noise_peaks = None #added
             self.aperiodic_params_ = self._robust_ap_fit(self.freqs, self.power_spectrum)
             self._ap_fit = gen_aperiodic(self.freqs, self.aperiodic_params_)
 
@@ -488,6 +504,7 @@ class FOOOF():
             self._spectrum_flat = self.power_spectrum - self._ap_fit
 
             # Find peaks, and fit them with gaussians
+
             self.gaussian_params_ = self._fit_peaks(np.copy(self._spectrum_flat))
 
             # Calculate the peak fit
@@ -500,40 +517,33 @@ class FOOOF():
             # Run final aperiodic fit on peak-removed power spectrum
             #   This overwrites previous aperiodic fit, and recomputes the flattened spectrum
             self.aperiodic_params_ = self._simple_ap_fit(self.freqs, self._spectrum_peak_rm)
-            print(self.aperiodic_params_ )
             self._ap_fit = gen_aperiodic(self.freqs, self.aperiodic_params_)
             self._spectrum_flat = self.power_spectrum - self._ap_fit
-            
-            add_iterations = 10
+            add_iterations = 20
             if np.all(self.gaussian_params_ != [0, 0, 0]):
                 for it in range(1, add_iterations+1):
     
                     self._spectrum_flat = self.power_spectrum - self._ap_fit
                     if it < add_iterations:
                         self.gaussian_params_ = self._fit_peaks(np.copy(self._spectrum_flat))
-                    
+
                     else:
                         self.gaussian_params_ = np.zeros_like(self.gaussian_params_)
                         self.gaussian_params_ = self._fit_peaks(np.copy(self._spectrum_flat))
                         
                     self._peak_fit = gen_periodic(self.freqs, np.ndarray.flatten(self.gaussian_params_))
-        
                     self._spectrum_peak_rm = self.power_spectrum - self._peak_fit
-        
-                    self.aperiodic_params_ = self._simple_ap_fit(self.freqs, self._spectrum_peak_rm)
-                    self._ap_fit = gen_aperiodic(self.freqs, self.aperiodic_params_) # either remove this from the last iteration or, reiterate theta after sgamma again
-            
-            
-            
-#############
-            
+
+                    if it < add_iterations:
+                        self.aperiodic_params_ = self._simple_ap_fit(self.freqs, self._spectrum_peak_rm)
+                        self._ap_fit = gen_aperiodic(self.freqs, self.aperiodic_params_) # either remove this from the last iteration or, reiterate gaussians again
+
 
             # Create full power_spectrum model fit
             self.fooofed_spectrum_ = self._peak_fit + self._ap_fit
-
             # Convert gaussian definitions to peak parameters
             self.peak_params_ = self._create_peak_params(self.gaussian_params_)
-
+            self.ap_fit = self._ap_fit
             # Calculate R^2 and error of the model fit
             self._calc_r_squared()
             self._calc_error()
@@ -941,48 +951,6 @@ class FOOOF():
 
 
     
-#################### new ap function with 3 options ###############################
-    def auto_aperiodic(self, freqs, power_spectrum):
-        modes = ['fixed', 'knee_1exp' ,'knee' , 'knee_flat' , 'knee_3exp' ]
-        n_params = [2, 3, 4, 5, 6]
-        AICs = []
-        residuals = {}
-        sigmas = []
-        for i, mode in enumerate(modes):
-            self.aperiodic_mode = mode
-            print("current mode: ", mode)
-            ap_params = self._simple_ap_fit(freqs, power_spectrum)
-            residual= power_spectrum - get_ap_func(self.aperiodic_mode)(freqs, *ap_params)
-            residuals[i] = residual
-            # Calculate the variance estimate (sigma^2)
-            
-            sigma2 = np.sum(residual**2)
-            sigmas.append(sigma2)
-            n_pnts = len(power_spectrum)
-            print("n_pnts: ", n_pnts)
-            nobs = n_params[i]
-            # Calculate AIC using sigma2, nobs, and df_modelwc
-            aic = bic_sigma(sigma2, n_pnts, nobs , True)
-            AICs.append(aic)
-        print(AICs)
-        print(f"lowest BIC is for mode: {modes[np.argmin(AICs)]}")
-        print(f"lowest BIC is : {min(AICs)}")
-        self.aperiodic_mode = modes[np.argmin(AICs)]
-        print("sigmas aare: ", sigmas)
-        """
-        plt.figure(figsize=(10, 7))
-        for i in range(len(n_params)):
-            plt.plot(freqs, residuals[i]**2, label=f"Residuals for {i}")
-
-        plt.xlabel("Frequency (Hz)")
-        plt.ylabel("Residuals")
-        plt.title("Residuals for Different Aperiodic Models")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-        """
-
-    
     def _simple_ap_fit(self, freqs, power_spectrum):
         """
         Fit the aperiodic component of the power spectrum.
@@ -1000,20 +968,23 @@ class FOOOF():
         aperiodic_params : 1d array
             Parameter estimates for aperiodic fit.
         """
+        #guess parameters for 1exp and flat+1exp
         off_guess = [power_spectrum[0] if not self._ap_guess[0] else self._ap_guess[0]]
         kne_guess = [self._ap_guess[1]] if self.aperiodic_mode == 'knee_1exp' else []
         exp_guess = [np.abs((self.power_spectrum[-1] - self.power_spectrum[0]) /
                             (np.log10(self.freqs[-1]) - np.log10(self.freqs[0])))
                      if not self._ap_guess[2] else self._ap_guess[2]]
         
-        if self.aperiodic_mode == 'fixed' or self.aperiodic_mode == 'knee_1exp':
-            if self.aperiodic_mode == 'knee_1exp':
-                ap_bounds = tuple(bound[0:3] for bound in self._ap_bounds)  
+        if self.aperiodic_mode == 'fixed' or self.aperiodic_mode == 'flat_1exp':
+            if self.aperiodic_mode == 'flat_1exp':
+                ap_bounds = ((-np.inf, self.freq_range[0], 0), (np.inf, self.freq_range[1], np.inf)) 
             elif self.aperiodic_mode == 'fixed':
                 ap_bounds = tuple(bound[0:2] for bound in self._ap_bounds)
 
             # Collect together guess parameters
             guess = np.array(off_guess + kne_guess + exp_guess)
+            if self.current_ap_fit_params is not None: 
+                guess = self.current_ap_fit_params 
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -1024,41 +995,84 @@ class FOOOF():
                                         check_finite=False)
             except RuntimeError as excp:
                 error_msg = "Model fitting failed due to not finding parameters in the simple aperiodic component fit."
-                print(f"Guess: {guess}")
-                print(f"Lower bounds: {ap_bounds[0]}")
-                print(f"Upper bounds: {ap_bounds[1]}")
-
                 raise FitError(error_msg) from excp
 
-        if self.aperiodic_mode == 'knee':
+        if self.aperiodic_mode == '2exp':
             # Select subregion of PSD
             f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
             freqs = freqs[f_mask]
             power_spectrum = power_spectrum[f_mask]
-            original_psd = power_spectrum.copy()  # vis
 
-            # Calculate guess parameters
+            # Calculate guess parameters for the 1st exponent
             freq_res = freqs[1] - freqs[0]
 
             start_index1 = round(13 / freq_res)
-            end_index1 = round(46 / freq_res)
+            end_index1 = round(45 / freq_res)
             f1 = freqs[start_index1:end_index1]
             u1 = np.log10(f1)
             p1 = power_spectrum[start_index1:end_index1]
-            guess_d1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
-            off1 = (guess_d1[0] * u1[0]) + p1[0]
+            guess_exp1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
+            off1 = (guess_exp1[0] * u1[0]) + p1[0]
 
+            # Calculate guess parameters for the 2nd exponent, knee, and power at knee
             start_index2 = round(75 / freq_res)
-            end_index2 = round(120 / freq_res)
+            end_index2 = round(120/ freq_res) 
             f2 = freqs[start_index2:end_index2]
             u2 = np.log10(f2)
             p2 = power_spectrum[start_index2:end_index2]
-            guess_d2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
-            off2 = (guess_d2[0] * u2[0] + p2[0])
-            z_guess = [(off2 - off1) / (guess_d2[0] - guess_d1[0])]
-            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess[0]))]
-            guess = np.array(knee_off_guess + z_guess + guess_d1 + guess_d2)
-            ap_bounds = ((-np.inf,0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
+            guess_exp2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
+            off2 = (guess_exp2[0] * u2[0] + p2[0])
+            knee_guess = [((off2 - off1) / (guess_exp2[0] - guess_exp1[0]))]
+            knee_off_guess = [np.log10(2) + (off1 - (guess_exp1[0] * knee_guess[0]))]
+            knee_guess = [10**(knee_guess[0])]
+            guess = np.array(knee_off_guess + knee_guess + guess_exp1 + guess_exp2)
+            ap_bounds = ((-np.inf, self.freq_range[0], 0, 0), (np.inf, self.freq_range[1], np.inf, np.inf))
+            
+            #avoid error, if guess is outside of ap_bounds #added
+            for g in range(0, len(guess)):
+                if guess[g] < ap_bounds[0][g]:
+                    guess[g] = ap_bounds[0][g]
+                elif guess[g] > ap_bounds[1][g]:
+                    guess[g] = ap_bounds[1][g]
+
+            if self.current_ap_fit_params is not None: #added
+                guess = self.current_ap_fit_params #added
+
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                guess[1] = self.knee_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                guess[2] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[2] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[2] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                guess[3] = self.exp2_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[3] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                guess[0] = self.off_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+
+
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -1072,216 +1086,230 @@ class FOOOF():
                             "the simple aperiodic component fit.")
                 raise FitError(error_msg) from excp
 
-        if self.aperiodic_mode == "knee_flat":
+            if aperiodic_params[2] > aperiodic_params[3]:
+                exp1_copy = aperiodic_params[2].copy()
+                exp2_copy = aperiodic_params[3].copy()
+                aperiodic_params[2] = exp2_copy
+                aperiodic_params[3] = exp1_copy
+
+        if self.aperiodic_mode == "2exp_flat":
             f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
             freqs = freqs[f_mask]
             power_spectrum = power_spectrum[f_mask]
-            original_psd = power_spectrum.copy()  # vis
 
-                    # Calculate guess parameters
+            # Calculate guess parameters for exp1
             freq_res = freqs[1] - freqs[0]
-
-            # Define improved ranges for slope estimation
             start_index1 = round(13 / freq_res)
             end_index1 = round(45 / freq_res)
             f1 = freqs[start_index1:end_index1]
             u1 = np.log10(f1)
             p1 = power_spectrum[start_index1:end_index1]
-            guess_d1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
-            new_guess_d1 = [np.abs(guess_d1[0])]
-            off1 = (guess_d1[0] * u1[0]) + p1[0]
+            guess_exp1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
+            off1 = (guess_exp1[0] * u1[0]) + p1[0]
 
+            # Calculate guess parameters for exp2 and knee
             start_index2 = round(75 / freq_res)
             end_index2 = round(180 / freq_res)
             f2 = freqs[start_index2:end_index2]
             u2 = np.log10(f2)
             p2 = power_spectrum[start_index2:end_index2]
-            guess_d2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
-            new_guess_d2 = [np.abs(guess_d2[0])]
-            off2 = (guess_d2[0] * u2[0] + p2[0])
-            z_guess = (off2 - off1) / (guess_d2[0] - guess_d1[0])
-            k1_guess = [np.abs(np.clip(z_guess, 0, 2.3))]
-            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess))]
+            guess_exp2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
+            new_guess_exp2 = [np.abs(guess_exp2[0])]
+            off2 = (guess_exp2[0] * u2[0] + p2[0])
+
+            knee_guess = [(off2 - off1) / (guess_exp2[0] - guess_exp1[0])]
+            
+            
+            # Calculate guess parameters for flat_freq, power at knee frequency
+            start_index3 = round(300 / freq_res)
+            end_index3 = round(495/ freq_res)
+            f3 = freqs[start_index3:end_index3]
+            u3 = np.log10(f3)
+            p3 = power_spectrum[start_index3:end_index3]
+            flat_off_guess = [np.mean(p3)]
+            flat_freq_guess = [(flat_off_guess[0] - off2)/(-1*new_guess_exp2[0])]
+            knee_off_guess = [np.log10(2) + (off1 - (guess_exp1[0] * knee_guess[0]))]
+            
+            guess = np.array(knee_off_guess + knee_guess + flat_freq_guess + guess_exp1 + new_guess_exp2) 
+            ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0), (np.inf, self.freq_range[1], self.freq_range[1], np.inf , np.inf))
+            if self.freq_range[1] < 400:
+                flat_freq_guess = [300]
+                guess = np.array(knee_off_guess + knee_guess + flat_freq_guess + guess_exp1 + new_guess_exp2) 
+                ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0), (np.inf, 490, 490, np.inf , np.inf))
+
+
+            #avoid error, if guess is outside of ap_bounds #added
+            for g in range(0, len(guess)):
+                if guess[g] < ap_bounds[0][g]:
+                    guess[g] = ap_bounds[0][g]
+                elif guess[g] > ap_bounds[1][g]:
+                    guess[g] = ap_bounds[1][g]
+            if self.current_ap_fit_params is not None: #added
+                guess = self.current_ap_fit_params #added
+
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                guess[1] = self.knee_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                guess[3] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[3] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                guess[4] = self.exp2_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[4] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[4] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                guess[0] = self.off_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+
+            if guess[2] < guess[1]:
+                guess[2] = guess[1] + 30
+            if guess[2] > self.freq_range[1] and self.freq_range[1] > 400:
+                guess[2] = 0.8*self.freq_range[1]
+
+            aperiodic_params, _ = curve_fit(
+                get_ap_func(self.aperiodic_mode),
+                freqs, power_spectrum, p0=guess,
+                maxfev=self._maxfev, bounds=ap_bounds,
+                ftol=self._tol, xtol=self._tol, gtol=self._tol,
+                check_finite=False
+            )
+                
+            if aperiodic_params[1] > aperiodic_params[2]:
+                knee_copy = aperiodic_params[1].copy()
+                flat_freq_copy = aperiodic_params[2].copy()
+                aperiodic_params[1] = flat_freq_copy
+                aperiodic_params[2] = knee_copy
+
+            
+        if self.aperiodic_mode == "3exp":
+            f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
+            freqs = freqs[f_mask]
+            power_spectrum = power_spectrum[f_mask]
+            original_psd = power_spectrum.copy()  # vis
+
+            # Calculate guess parameters for exp1
+            freq_res = freqs[1] - freqs[0]
+            start_index1 = round(13 / freq_res)
+            end_index1 = round(45 / freq_res)
+            f1 = freqs[start_index1:end_index1]
+            u1 = np.log10(f1)
+            p1 = power_spectrum[start_index1:end_index1]
+            guess_exp1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
+            off1 = (guess_exp1[0] * u1[0]) + p1[0]
+
+            # Calculate guess parameters for exp2, exp3, knee, flat_freq, power at knee frequency for fitting untill 500 Hz
+            start_index2 = round(75 / freq_res)
+            end_index2 = round(180 / freq_res)
+            f2 = freqs[start_index2:end_index2]
+            u2 = np.log10(f2)
+            p2 = power_spectrum[start_index2:end_index2]
+            guess_exp2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
+            new_guess_exp2 = [np.abs(guess_exp2[0])]
+            off2 = (guess_exp2[0] * u2[0] + p2[0])
+
+            knee_guess = [(off2 - off1) / (guess_exp2[0] - guess_exp1[0])]
             
             start_index3 = round(300 / freq_res)
-            end_index3 = round(500/ freq_res)
+            end_index3 = round(495/ freq_res)
             f3 = freqs[start_index3:end_index3]
             u3 = np.log10(f3)
             p3 = power_spectrum[start_index3:end_index3]
-            guess_d3 = [(p3[-1] - p3[0]) / (u3[0] - u3[-1])]
+            flat_off_guess = [np.mean(p3)]
+            flat_freq_guess = [(flat_off_guess[0] - off2)/(-1*new_guess_exp2[0])]
             
-            new_guess_d3 = [np.abs(guess_d3[0])]
+            exp3_guess = [0]
+            knee_off_guess = [np.log10(2) + (off1 - (guess_exp1[0] * knee_guess[0]))]
             
+            #flat_fr_logged_guess = [2.3]  # Adjust this initial guess if needed
+            guess = np.array(knee_off_guess + knee_guess + flat_freq_guess + guess_exp1 + new_guess_exp2 + exp3_guess) 
+            ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0, 0), (np.inf, self.freq_range[1], self.freq_range[1], np.inf , np.inf, np.inf))
+            #guess flat_freq if fitting range is <400 Hz
+            if self.freq_range[1] < 400:
+                flat_freq_guess = [300]
+                guess = np.array(knee_off_guess + knee_guess + flat_freq_guess + guess_exp1 + new_guess_exp2 + exp3_guess)  
+                ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0, 0), (np.inf, 490, 490, np.inf , np.inf, np.inf))
+            #avoid error, if guess is outside of ap_bounds #added
+            for g in range(0, len(guess)):
+                if guess[g] < ap_bounds[0][g]:
+                    guess[g] = ap_bounds[0][g]
+                elif guess[g] > ap_bounds[1][g]:
+                    guess[g] = ap_bounds[1][g]
             
-            flat_fr_logged_guess = [2.3]  # Adjust this initial guess if needed
-            guess = np.array(knee_off_guess + flat_fr_logged_guess + new_guess_d1 + new_guess_d2 + k1_guess ) 
-            ap_bounds = ((-np.inf,0, 0, 0 , 0), (np.inf, np.inf, np.inf, np.inf , np.inf))
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    aperiodic_params, _ = curve_fit(
-                        get_ap_func(self.aperiodic_mode),
-                        freqs, power_spectrum, p0=guess,
-                        maxfev=self._maxfev, bounds=ap_bounds,
-                        ftol=self._tol, xtol=self._tol, gtol=self._tol,
-                        check_finite=False
-                    )
-            except RuntimeError as excp:
-                error_msg = ("Model fitting failed due to not finding parameters in "
-                            "the simple aperiodic component fit.")
-                raise FitError(error_msg) from excp
+            if self.current_ap_fit_params is not None: #added
+                guess = self.current_ap_fit_params #added
 
-            
-        if self.aperiodic_mode == "knee_3exp":
-            ap_bounds = self._ap_bounds
-            f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
-            freqs = freqs[f_mask]
-            power_spectrum = power_spectrum[f_mask]
-            original_psd = power_spectrum.copy()  # vis
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                guess[1] = self.knee_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                guess[3] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[3] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                guess[4] = self.exp2_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[4] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[4] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                guess[0] = self.off_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+            if guess[2] < guess[1]:
+                guess[2] = guess[1] + 30
+            if guess[2] > self.freq_range[1] and self.freq_range[1] > 400:
+                guess[2] = 0.8*self.freq_range[1]
+            aperiodic_params, _ = curve_fit(
+                get_ap_func(self.aperiodic_mode),
+                freqs, power_spectrum, p0=guess,
+                maxfev=self._maxfev, bounds=ap_bounds,
+                ftol=self._tol, xtol=self._tol, gtol=self._tol,
+                check_finite=False
+            )
+            if aperiodic_params[1] > aperiodic_params[2]:
+                knee_copy = aperiodic_params[1].copy()
+                flat_freq_copy = aperiodic_params[2].copy()
+                aperiodic_params[1] = flat_freq_copy
+                aperiodic_params[2] = knee_copy
 
-                    # Calculate guess parameters
-            freq_res = freqs[1] - freqs[0]
-
-            # Define improved ranges for slope estimation
-            start_index1 = round(13 / freq_res)
-            end_index1 = round(45 / freq_res)
-            f1 = freqs[start_index1:end_index1]
-            u1 = np.log10(f1)
-            p1 = power_spectrum[start_index1:end_index1]
-            guess_d1 = [(p1[-1] - p1[0]) / (u1[0] - u1[-1])]
-            new_guess_d1 = [np.abs(guess_d1[0])]
-            off1 = (guess_d1[0] * u1[0]) + p1[0]
-
-            start_index2 = round(75 / freq_res)
-            end_index2 = round(180 / freq_res)
-            f2 = freqs[start_index2:end_index2]
-            u2 = np.log10(f2)
-            p2 = power_spectrum[start_index2:end_index2]
-            guess_d2 = [(p2[-1] - p2[0]) / (u2[0] - u2[-1])]
-            new_guess_d2 = [np.abs(guess_d2[0])]
-            off2 = (guess_d2[0] * u2[0] + p2[0])
-            z_guess = (off2 - off1) / (guess_d2[0] - guess_d1[0])
-            k1_guess = [np.abs(np.clip(z_guess, 0, 2.3))]
-            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0] * z_guess))]
-            
-            start_index3 = round(300/ freq_res)
-            end_index3 = round(500 / freq_res)
-            f3 = freqs[start_index3:end_index3]
-            u3 = np.log10(f3)
-            p3 = power_spectrum[start_index3:end_index3]
-            guess_d3 = [(p3[-1] - p3[0]) / (u3[0] - u3[-1])]
-            
-            new_guess_d3 = [np.abs(guess_d3[0])]
-            
-            
-            flat_fr_logged_guess = [2.3]  # Adjust this initial guess if needed
-            k2_guess = [ new_guess_d2[0] * (flat_fr_logged_guess[0] +k1_guess[0])]
-            guess = np.array(knee_off_guess + k1_guess+ flat_fr_logged_guess + new_guess_d1 + new_guess_d2 + new_guess_d3  ) 
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    aperiodic_params, _ = curve_fit(
-                        get_ap_func(self.aperiodic_mode),
-                        freqs, power_spectrum, p0=guess,
-                        maxfev=self._maxfev, bounds=ap_bounds,
-                        ftol=self._tol, xtol=self._tol, gtol=self._tol,
-                        check_finite=False
-                    )
-            except RuntimeError as excp:
-                error_msg = ("Model fitting failed due to not finding parameters in "
-                            "the simple aperiodic component fit.")
-                raise FitError(error_msg) from excp
-
+        self.current_ap_fit_params = aperiodic_params #added
         return aperiodic_params
-
-    """
-
-    def _simple_ap_fit(self, freqs, power_spectrum):
-        
-        Fit the aperiodic component of the power spectrum.
-
-        Parameters
-        ----------
-        freqs : 1d array
-            Frequency values for the power_spectrum, in linear scale.
-        power_spectrum : 1d array
-            Power values, in log10 scale.
-
-        Returns
-        -------
-        aperiodic_params : 1d array
-            Parameter estimates for aperiodic fit.
-       
-        # Get the guess parameters and/or calculate from the data, as needed
-        #   Note that these are collected as lists, to concatenate with or without knee later
-        
-        def get_initial_guess(aperiodic_mode, power_spectrum, freqs):
-            off_guess = [power_spectrum[0] if not self._ap_guess[0] else self._ap_guess[0]]
-            kne_guess = [self._ap_guess[1]] if aperiodic_mode == 'knee_1exp' else []
-            exp_guess = [np.abs((power_spectrum[-1] - power_spectrum[0]) /
-                                (np.log10(freqs[-1]) - np.log10(freqs[0])))
-                        if not self._ap_guess[2] else self._ap_guess[2]]
-            return np.array(off_guess + kne_guess + exp_guess)
-
-        guess = None
-        if self.aperiodic_mode in ['fixed', 'knee_1exp']:
-            guess = get_initial_guess(self.aperiodic_mode, power_spectrum, freqs)
-            ap_bounds = tuple(bound[0::2] for bound in self._ap_bounds)        
-            
-        elif self.aperiodic_mode =='knee':           
-            
-            freq_res = freqs[1] - freqs[0]
-            start_index1 = round(13/freq_res)
-            end_index1 = round(46/freq_res)
-            f1 = freqs[start_index1:end_index1]
-            u1 = np.log10(f1)
-            p1 = power_spectrum[start_index1:end_index1]
-            guess_d1 = [(p1[-1] - p1[0])/(u1[0]-u1[-1])]
-            off1 = (guess_d1[0]*u1[0]) + p1[0]
-            if guess_d1[0] < 0:
-                guess_d1 = [0]
-            start_index2 = round(75/freq_res)
-            end_index2 = round(120/freq_res)
-            f2 = freqs[start_index2:end_index2]
-            u2 = np.log10(f2)
-            p2 = power_spectrum[start_index2:end_index2]
-            guess_d2 = [(p2[-1] - p2[0])/(u2[0]-u2[-1])]
-            if guess_d2[0] < 0:
-                guess_d2 = [0]
-            off2 = (guess_d2[0]*u2[0] + p2[0])
-
-            z_guess = [(off2 - off1)/(guess_d2[0] - guess_d1[0])]
-            if z_guess[0] < 0:
-                z_guess = [0]  
-            knee_off_guess = [np.log10(2) + (off1 - (guess_d1[0]*z_guess[0]))]
-
-            initial_guess = knee_off_guess - np.log10(10**(guess_d1*(np.log10(freqs)-z_guess)) + 10**(guess_d2*(np.log10(freqs)-z_guess))) # vis
-
-            guess = np.array(knee_off_guess + z_guess + guess_d1 + guess_d2) 
-            
-            ap_bounds = self._ap_bounds if self.aperiodic_mode == 'knee' \
-                else tuple(bound[0::2] for bound in self._ap_bounds)
-
-
-        # Ignore warnings that are raised in curve_fit
-        #   A runtime warning can occur while exploring parameters in curve fitting
-        #     This doesn't effect outcome - it won't settle on an answer that does this
-        #   It happens if / when b < 0 & |b| > x**2, as it leads to log of a negative number
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                aperiodic_params, _ = curve_fit(get_ap_func(self.aperiodic_mode),
-                                                freqs, power_spectrum, p0=guess,
-                                                maxfev=self._maxfev, bounds=ap_bounds,
-                                                ftol=self._tol, xtol=self._tol, gtol=self._tol,
-                                                check_finite=False)
-        except RuntimeError as excp:
-            error_msg = ("Model fitting failed due to not finding parameters in "
-                            "the simple aperiodic component fit.")
-            raise FitError(error_msg) from excp
-        return aperiodic_params
-
-    """
 
     def _robust_ap_fit(self, freqs, power_spectrum):
         """Fit the aperiodic component of the power spectrum robustly, ignoring outliers.
@@ -1321,16 +1349,117 @@ class FOOOF():
         spectrum_ignore = power_spectrum[perc_mask]
 
         # Get bounds for aperiodic fitting, dropping knee bound if not set to fit knee
-        if self.aperiodic_mode == 'knee':
-            ap_bounds = ((-np.inf, 0, 0, 0), (np.inf, np.inf, np.inf, np.inf))
-
-
-        elif self.aperiodic_mode == 'knee_3exp':
-            ap_bounds = self._ap_bounds
-        elif self.aperiodic_mode == 'knee_flat':
-            ap_bounds = ((-np.inf, 0, 0, 0,0), (np.inf, np.inf, np.inf, np.inf, np.inf))
-        elif self.aperiodic_mode == 'knee_1exp':
-            ap_bounds = tuple(bound[0:3] for bound in self._ap_bounds)  # Assuming _ap_bounds already correctly structured for 'knee_1exp'
+        if self.aperiodic_mode == '2exp':
+            ap_bounds = ((-np.inf, self.freq_range[0], 0, 0), (np.inf, self.freq_range[1], np.inf, np.inf))
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                popt[1] = self.knee_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                popt[2] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[2] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[2] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                popt[3] = self.exp2_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[3] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                popt[0] = self.off_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+        elif self.aperiodic_mode == '3exp':
+            ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0, 0), (np.inf, self.freq_range[1], self.freq_range[1], np.inf , np.inf, np.inf))
+            if self.freq_range[1] < 400:
+                ap_bounds = ((-np.inf,self.freq_range[0], self.freq_range[0], 0 , 0, 0), (np.inf, 490, 490, np.inf , np.inf, np.inf))
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                popt[1] = self.knee_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                popt[3] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[3] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                popt[4] = self.exp2_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[4] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[4] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                popt[0] = self.off_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+        elif self.aperiodic_mode == '2exp_flat':
+            ap_bounds = ((-np.inf, self.freq_range[0], self.freq_range[0], 0, 0), (np.inf, self.freq_range[1], self.freq_range[1], np.inf, np.inf))
+            if self.freq_range[1] < 400:
+                ap_bounds = ((-np.inf, self.freq_range[0], self.freq_range[0], 0, 0), (np.inf, 490, 490, np.inf, np.inf))
+            ######added optional fixation of ap parameters ##############################
+            if self.knee_fix is not None:
+                popt[1] = self.knee_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[1] = self.knee_fix - self.knee_pr
+                if lower_bounds_l[1] < self.freq_range[0]:
+                    lower_bounds_l[1] = self.freq_range[0]
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                upper_bounds_l[1] = self.knee_fix + self.knee_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp1_fix is not None:
+                popt[3] = self.exp1_fix
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[3] = self.exp1_fix - self.exp1_pr
+                upper_bounds_l[3] = self.exp1_fix + self.exp1_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.exp2_fix is not None:
+                popt[4] = self.exp2_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[4] = self.exp2_fix - self.exp2_pr
+                upper_bounds_l[4] = self.exp2_fix + self.exp2_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            if self.off_fix is not None:
+                popt[0] = self.off_fix 
+                lower_bounds_l = list(ap_bounds[0])
+                upper_bounds_l = list(ap_bounds[1])
+                lower_bounds_l[0] = self.off_fix - self.off_pr
+                upper_bounds_l[0] = self.off_fix + self.off_pr
+                ap_bounds = (tuple(lower_bounds_l), tuple(upper_bounds_l))
+            ######added optional fixation of ap parameters ##############################
+        elif self.aperiodic_mode == 'flat_1exp':
+            #ap_bounds = tuple(bound[0:3] for bound in self._ap_bounds)  # Assuming _ap_bounds already correctly structured for 'knee_1exp'
+            ap_bounds = ((-np.inf, (self.freq_range[0]), 0), (np.inf, (self.freq_range[1]), np.inf)) 
         elif self.aperiodic_mode == 'fixed':
             ap_bounds = tuple(bound[0:2] for bound in self._ap_bounds)
         else:
@@ -1338,23 +1467,30 @@ class FOOOF():
 
         # Second aperiodic fit - using results of first fit as guess parameters
         #  See note in _simple_ap_fit about warnings
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                aperiodic_params, _ = curve_fit(get_ap_func(self.aperiodic_mode),
-                                                freqs_ignore, spectrum_ignore, p0=popt,
-                                                maxfev=self._maxfev, bounds=ap_bounds,
-                                                ftol=self._tol, xtol=self._tol, gtol=self._tol,
-                                                check_finite=False)
-        except RuntimeError as excp:
-            error_msg = ("Model fitting failed due to not finding "
-                         "parameters in the robust aperiodic fit.")
-            raise FitError(error_msg) from excp
-        except TypeError as excp:
-            error_msg = ("Model fitting failed due to sub-sampling "
-                         "in the robust aperiodic fit.")
-            raise FitError(error_msg) from excp
-
+        for g in range(0, len(popt)):
+                if popt[g] < ap_bounds[0][g]:
+                    popt[g] = ap_bounds[0][g]
+                elif popt[g] > ap_bounds[1][g]:
+                    popt[g] = ap_bounds[1][g]
+        aperiodic_params, _ = curve_fit(get_ap_func(self.aperiodic_mode),
+                                        freqs_ignore, spectrum_ignore, p0=popt,
+                                        maxfev=self._maxfev, bounds=ap_bounds,
+                                        ftol=self._tol, xtol=self._tol, gtol=self._tol,
+                                        check_finite=False)
+        if self.aperiodic_mode == '2exp_flat' or self.aperiodic_mode == '3exp':
+            if aperiodic_params[1] > aperiodic_params[2]:
+                    knee_copy = aperiodic_params[1].copy()
+                    flat_freq_copy = aperiodic_params[2].copy()
+                    aperiodic_params[1] = flat_freq_copy
+                    aperiodic_params[2] = knee_copy
+        elif self.aperiodic_mode == '2exp':
+            if aperiodic_params[2] > aperiodic_params[3]:
+                exp1_copy = aperiodic_params[2].copy()
+                exp2_copy = aperiodic_params[3].copy()
+                aperiodic_params[2] = exp2_copy
+                aperiodic_params[3] = exp1_copy
+                                        
+        self.current_ap_fit_params = aperiodic_params #added
         return aperiodic_params
 
 
@@ -1362,96 +1498,184 @@ class FOOOF():
 
 ##################################################inserted#########################################################################################
 
-    def _fit_peaks2(self, flat_iter):
+
+
+    def rem_electric_noise(self, power_spectrum, freqs):
         
+        """
+        Remove harmonics and electric noise from the power spectrum.
 
-        # Initialize matrix of guess parameters for gaussian fitting
-        guess = np.empty([0, 3])
-        self.std_limits =  np.empty([0, 2])
-        self.cf_bounds = np.empty([0, 2])
+        Parameters
+        ----------
+        freqs : 1d array
+            Frequency values for the power_spectrum, in linear scale.
+        power_spectrum : 1d array
+            Power values, in log10 scale.
+
+        Returns
+        -------
         
-        # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
-        #   Stopping procedures: limit on # of peaks, or relative or absolute height thresholds
-        while len(guess) < self.max_n_peaks:
+        power_spectrum : 1d array
+            Power spectrum filtered from noise.
+        """
+        maxfevs = 5000 # The maximum number of calls to the curve fitting function
+        _tol = 0.00001 #  Here reduce tolerance to speed fitting. Set value to 1e-8 to match curve_fit default
 
-            # Find candidate peak - the maximum point of the flattened spectrum
-            max_ind = np.argmax(flat_iter)
-            max_height = flat_iter[max_ind]
 
-            # Stop searching for peaks once height drops below height threshold
-            if max_height <= self.peak_threshold * np.std(flat_iter):
-                break
+        power_spectrum = np.log10(power_spectrum)
+        
+        # first of all: remove electric noise and its harmonics
+        noise_bands = [[43, 57], [130, 170], [12.5, 22]]
+        correnction_bands = [[48.5, 51.5], [148, 152], [13.5, 21.5]]
+        noise_std_limits = [0, 4]
+        
+        
+        #second: fit gaussian peaks at bands having harmonics or electric noise
+        ap_mode = 'fixed'
+        ap_bounds_n = ((-np.inf, -np.inf), (np.inf, np.inf))
 
-            # Set the guess parameters for gaussian fitting, specifying the mean and height
-            guess_freq = self.freqs[max_ind]
-            guess_height = max_height
+        
+        for noise_band, correction_band in zip(noise_bands, correnction_bands):
+            # calculate guess parameters
+            freq_res = freqs[1] - freqs[0]
+            start_index1 = round(noise_band[0]/freq_res)
+            end_index1 = round(noise_band[1]/freq_res)
+            f1 = freqs[start_index1:end_index1]
+            u1 = np.log10(f1)
+            p1 = power_spectrum[start_index1:end_index1]
+            guess_exp1 = [(p1[-1] - p1[0])/(u1[0]-u1[-1])]
+            off1 = (guess_exp1[0]*u1[0]) + p1[0]
 
-            # Halt fitting process if candidate peak drops below minimum height
-            if not guess_height > self.min_peak_height:
-                break
 
-            # Data-driven first guess at standard deviation
-            #   Find half height index on each side of the center frequency
-            half_height = 0.5 * max_height
-            le_ind = next((val for val in range(max_ind - 1, 0, -1)
-                           if flat_iter[val] <= half_height), None)
-            ri_ind = next((val for val in range(max_ind + 1, len(flat_iter), 1)
-                           if flat_iter[val] <= half_height), None)
+            f_mask_n = np.logical_and(freqs >= noise_band[0], freqs <= noise_band[1])
+            freqs_n = freqs[f_mask_n]
+            f_mask_correction = np.logical_and(freqs >= correction_band[0], freqs <= correction_band[1])
+            freqs_correction = freqs[f_mask_correction]
+            psd_n = power_spectrum[f_mask_n]
 
-            # Guess bandwidth procedure: estimate the width of the peak
-            try:
-                # Get an estimated width from the shortest side of the peak
-                #   We grab shortest to avoid estimating very large values from overlapping peaks
-                # Grab the shortest side, ignoring a side if the half max was not found
-                short_side = min([abs(ind - max_ind) \
-                    for ind in [le_ind, ri_ind] if ind is not None])
-
-                # Use the shortest side to estimate full-width, half max (converted to Hz)
-                #   and use this to estimate that guess for gaussian standard deviation
-                fwhm = short_side * 2 * self.freq_res
-                guess_std = compute_gauss_std(fwhm)
-
-            except ValueError:
-                # This procedure can fail (very rarely), if both left & right inds end up as None
-                #   In this case, default the guess to the average of the peak width limits
-                guess_std = np.mean(self.peak_width_limits)
-
-            # Check that guess value isn't outside preset limits - restrict if so
-            #   Note: without this, curve_fitting fails if given guess > or < bounds
-            if guess_std < self._gauss_std_limits[0]:
-                guess_std = self._gauss_std_limits[0]
-            if guess_std > self._gauss_std_limits[1]:
-                guess_std = self._gauss_std_limits[1]
+            n_off_guess = [off1]
+            n_exp_guess = guess_exp1
+            noise_guess = np.array(n_off_guess + n_exp_guess) 
+            noise_ap_params0, _ = curve_fit(get_ap_func(ap_mode),
+                                                freqs_n, psd_n, p0=noise_guess,
+                                                maxfev=maxfevs, bounds=ap_bounds_n,
+                                                ftol=_tol, xtol=_tol, gtol=_tol,
+                                                check_finite=False)
             
-            self.std_limits = np.vstack((self.std_limits, self._gauss_std_limits))
-            self.cf_bounds = np.vstack((self.cf_bounds, self.freq_range))
+            initial_noise_fit = noise_ap_params0[0] - np.log10(freqs_n**noise_ap_params0[1])
+            # flatten and remove outliers
+            flatspec = psd_n - initial_noise_fit
+            flatspec[flatspec < 0] = 0 # Flatten outliers, defined as any points that drop below 0
+            perc_thresh = np.percentile(flatspec, 0.025) # -> remove top 2.5% of power values, don't be confused that it rounds to 0
+            perc_mask = flatspec <= perc_thresh
+            freqs_n_ignore = freqs_n[perc_mask]
+            psd_n_ignore = psd_n[perc_mask]
 
-            # Collect guess parameters and subtract this guess gaussian from the data
-            guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
-            peak_gauss = gaussian_function(self.freqs, guess_freq, guess_height, guess_std)
-            flat_iter = flat_iter - peak_gauss
+            noise_ap_params1, _ = curve_fit(get_ap_func(ap_mode),
+                                                freqs_n_ignore, psd_n_ignore, p0=noise_ap_params0,
+                                                maxfev=maxfevs, bounds=ap_bounds_n,
+                                                ftol=_tol, xtol=_tol, gtol=_tol,
+                                                check_finite=False)
+            out_rem_noise_fit = noise_ap_params1[0] - np.log10(freqs_n**noise_ap_params1[1])
+            flat_noise_spec = psd_n - out_rem_noise_fit
+            flat_noise_with_peak = psd_n - out_rem_noise_fit # copy for later
 
-        # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess, self.std_limits , self.cf_bounds = self._drop_peak_cf(guess)
-        guess ,self.std_limits , self.cf_bounds = self._drop_peak_overlap(guess)
+            
+            # calculate noise gaussian peak
+            guess_n_peak = np.empty([0, 3])
+            max_ind = np.argmax(flat_noise_spec)
+            max_height = flat_noise_spec[max_ind]
+            guess_freq = freqs_n[max_ind]
+            guess_height = max_height
+            if guess_height > 0.01: # min_peak_height arbitrarily chosen to be 0.2
+                if not max_height <= 0.1 * np.std(flat_noise_spec): # relitive threshold arbitrarily chosen to be 1
+                    half_height = 0.5 * max_height
+                    le_ind = next((val for val in range(max_ind - 1, 0, -1)
+                                if flat_noise_spec[val] <= half_height), None)
+                    ri_ind = next((val for val in range(max_ind + 1, len(flat_noise_spec), 1)
+                                if flat_noise_spec[val] <= half_height), None)
 
-        # If there are peak guesses, fit the peaks, and sort results
-        if len(guess) > 0:
-            gaussian_params = self._fit_peak_guess(guess)
-            gaussian_params = gaussian_params[gaussian_params[:, 0].argsort()]
-        else:
-            gaussian_params = np.empty([0, 3])
+                    try:
+                        short_side = min([abs(ind - max_ind) \
+                            for ind in [le_ind, ri_ind] if ind is not None])
 
-        return gaussian_params
+                        fwhm = short_side * 2 * freq_res
+                        guess_std = fwhm / (2 * np.sqrt(2 * np.log(2)))
+        
+                    except ValueError:
+                        guess_std = np.mean(noise_std_limits)*2
+
+                    if guess_std < noise_std_limits[0]:
+                        guess_std = noise_std_limits[0]
+                    if guess_std > noise_std_limits[1]:
+                        guess_std = noise_std_limits[1]
+        
+                    guess_n_peak = np.vstack((guess_n_peak, (guess_freq, guess_height, guess_std)))
+                    peak_gauss = gaussian_function(freqs_n, guess_freq, guess_height, guess_std)
+                    flat_noise_spec = flat_noise_spec - peak_gauss
+        
+        
+                if len(guess_n_peak) > 0:
+                    
+                    lo_bound = [[peak[0] - 2 * 0.5 * peak[2], 0, noise_std_limits[0]] # 1.5 = self._cf_bound
+                                for peak in guess_n_peak]
+                    hi_bound = [[peak[0] + 2 * 0.5 * peak[2], np.inf, noise_std_limits[1]]
+                                for peak in guess_n_peak]
+
+                    lo_bound = [bound if bound[0] > noise_band[0] else \
+                        [noise_band[0], *bound[1:]] for bound in lo_bound]
+                    hi_bound = [bound if bound[0] < noise_band[1] else \
+                        [noise_band[1], *bound[1:]] for bound in hi_bound]
+
+                    gaus_param_bounds = (tuple(item for sublist in lo_bound for item in sublist),
+                                        tuple(item for sublist in hi_bound for item in sublist))
+            
+                    # Flatten guess, for use with curve fit
+                    guess_n_peak = np.ndarray.flatten(guess_n_peak)
+
+                    # fit_noise_peak
+                    noise_params, _ = curve_fit(gaussian_function, freqs_n, flat_noise_with_peak,
+                                        p0=guess_n_peak, maxfev=maxfevs, bounds=gaus_param_bounds,
+                                        ftol=_tol, xtol=_tol, gtol=_tol,
+                                        check_finite=False, jac=jacobian_gauss)
+                    
+                    noise_peak  = gaussian_function(freqs_n, noise_params[0], noise_params[1], noise_params[2])
+                    psd_n_peak_rem = psd_n - noise_peak
+
+
+                    noise_ap_params2, _ = curve_fit(get_ap_func(ap_mode),
+                                            freqs_n, psd_n_peak_rem, p0=noise_ap_params1,
+                                            maxfev=maxfevs, bounds=ap_bounds_n,
+                                            ftol=_tol, xtol=_tol, gtol=_tol,
+                                            check_finite=False)
+                    iters_noise_fit = noise_ap_params2[0] - np.log10(freqs_n**noise_ap_params2[1])
+
+                    n_iterations = 12
+                    for it in range(1, n_iterations +1):
+                        if np.all(noise_params != [0, 0, 0]):
+                            flat_noise_with_peak = psd_n - iters_noise_fit
+                            noise_params, _ = curve_fit(gaussian_function, freqs_n, flat_noise_with_peak,
+                                        p0=noise_params, maxfev=maxfevs, bounds=gaus_param_bounds,
+                                        ftol=_tol, xtol=_tol, gtol=_tol,
+                                        check_finite=False, jac=jacobian_gauss)                          
+                            noise_peak  = gaussian_function(freqs_n, noise_params[0], noise_params[1], noise_params[2])
+
+                            
+                            psd_n_peak_rem = psd_n - noise_peak
+                            noise_ap_params2, _ = curve_fit(get_ap_func(ap_mode),
+                                            freqs_n, psd_n_peak_rem, p0=noise_ap_params2,
+                                            maxfev=maxfevs, bounds=ap_bounds_n,
+                                            ftol=_tol, xtol=_tol, gtol=_tol,
+                                            check_finite=False)
+                            iters_noise_fit = noise_ap_params2[0] - np.log10(freqs_n**noise_ap_params2[1])
+            
+
+                    power_spectrum[f_mask_n] = power_spectrum[f_mask_n] - noise_peak  #remove the noise peak from the original power spectrum
+
+        power_spectrum = 10**power_spectrum
+        return power_spectrum
+
     
-########################chatgpt version#################
-
-
-
-
-
-
-##################################################inserted#########################################################################################
     def _fit_peaks(self, flat_iter):
         """
         Iteratively fit peaks to flattened spectrum.
@@ -1467,157 +1691,70 @@ class FOOOF():
         Parameters that define the gaussian fit(s).
         Each row is a gaussian, as [mean, height, standard deviation].
         """
-        # Define frequency ranges and corresponding parameters
-        theta_range = [1, 10]
-        sgamma_range = [25, 40]
-        electronic_noise_range = [45, 55]
+        # Define frequency bands ranges and corresponding parameters
+
         self.std_limits = np.empty([0 , 2])
         self.cf_bounds = np.empty([0 , 2])
-        fgamma_range =[50, 100]
-        swr_range = [120, 200]
-        list_of_ranges = [theta_range, sgamma_range, fgamma_range , swr_range]
-        list_of_thresholds = [1, 1.5, 1, 2]  # Adjusted thresholds based on typical SNR
-        list_of_peak_widths = [[0.5, 3], [2, 10], [2.5, 30] , [10,100]]
+        theta_range = [self.freq_range[0], 19]
+        sgamma_range = [19, 48]
+        fgamma_range = [51, 90]
+        ripple_range = [100, 200]
+        list_of_ranges = [ripple_range, fgamma_range, theta_range, sgamma_range]  
+        list_of_thresholds = [1, 1, 1, 1] #equivalent to peak_threshold in the original FOOOF library
+        abs_thresholds = [ 0.05, 0.08, 0.1, 0.05] #equivalent to min_peak_height in the original FOOOF library 
+        list_of_peak_widths = [ [10, 30], [3, 35], [2, 5], [5, 20]] #equivalent to peak_width_limits in the original FOOOF library
+        allowed_ranges = [[125, 160], [52, 80], [5, 9.5], [25, 40]] #fitting ranges for different frequency bands
         # Initialize matrix of guess parameters for gaussian fitting
         guess = np.empty([0, 3])
+
+
+        #Parameters for frequency range higher than 400 Hz
+        if self.freq_range[1] >= 400:
+            additional_peak_range = [205, 495]
+            list_of_ranges = [ripple_range, fgamma_range, theta_range, sgamma_range, additional_peak_range]
+            list_of_thresholds = [1, 1, 1, 1, 1]
+            abs_thresholds = [0.05, 0.08, 0.1, 0.05, 0.05]
+            list_of_peak_widths = [ [10, 30], [3, 35], [2, 5], [5, 20], [50, 150]]
+            allowed_ranges = [[125, 160], [52, 80], [5, 9.5], [25, 47], [220, 380]] 
+
+        
+        
+        
+        elif self.freq_range[1] <= 120:
+            # for 4-100Hz:
+            list_of_ranges = [fgamma_range, theta_range, sgamma_range]  
+            list_of_thresholds = [1, 1, 1]
+            abs_thresholds = [0.08, 0.1, 0.05] 
+            list_of_peak_widths = [[3, 35], [2, 5], [5, 20]]
+            allowed_ranges = [[52, 80], [5, 9.5], [25, 47]]
+        
         # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
         # Stopping procedures: limit on # of peaks, or relative or absolute height thresholds
-        for current_range, current_threshold, current_width in zip(list_of_ranges, list_of_thresholds, list_of_peak_widths):
-            current_range_indices = (self.freqs >= current_range[0]) & (self.freqs <= current_range[1])
-            current_band = flat_iter[current_range_indices]
-            current_freqs = self.freqs[current_range_indices]
-            max_ind = np.argmax(current_band)
-            max_height = current_band[max_ind]
-
-            i=0
-            while i<1:
-                            # Find peaks in the current_band
-                peaks, _ = find_peaks(current_band, height= current_threshold *np.std(current_band))
-                
-                # Check if peaks are found
-                if len(peaks) == 0:
-                    break
-                
-                # Select the peak with the maximum height
-                peak_index = peaks[np.argmax(current_band[peaks])]
-                
-                # Retrieve the corresponding frequency and height
-                guess_freq = current_freqs[peak_index]
-                guess_height = current_band[peak_index]
-                
-                # Halt fitting process if candidate peak drops below minimum height
-                if not guess_height > self.min_peak_height:
-                    break
-                
-                # Data-driven first guess at standard deviation
-                # Find half height index on each side of the center frequency
-                half_height = 0.5 * guess_height
-                le_ind = next((val for val in range(peak_index - 1, 0, -1) if current_band[val] <= half_height), None)
-                ri_ind = next((val for val in range(peak_index + 1, len(current_band), 1) if current_band[val] <= half_height), None)
-
-                # Guess bandwidth procedure: estimate the width of the peak
-                try:
-                    # Get an estimated width from the shortest side of the peak
-                    short_side = min([abs(ind - peak_index) for ind in [le_ind, ri_ind] if ind is not None])
-
-                    # Use the shortest side to estimate full-width, half max (converted to Hz)
-                    # and use this to estimate that guess for gaussian standard deviation
-                    fwhm = short_side * 2 * self.freq_res
-                    guess_std = compute_gauss_std(fwhm)
-
-                except ValueError:
-                    # This procedure can fail (very rarely), if both left & right inds end up as None
-                    # In this case, default the guess to the average of the peak width limits
-                    guess_std = np.mean(current_width)
-
-                # Check that guess value isn't outside preset limits - restrict if so
-                if guess_std < current_width[0]:
-                    guess_std = current_width[0]
-                if guess_std > current_width[1]:
-                    guess_std = current_width[1]
-
-
-                self.std_limits = np.vstack((self.std_limits,current_width))
-                self.cf_bounds = np.vstack((self.cf_bounds, current_range))
-                # Collect guess parameters and subtract this guess gaussian from the data
-                guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
-                peak_gauss = gaussian_function(current_freqs, guess_freq, guess_height, guess_std)
-                current_band = current_band - peak_gauss
-                flat_iter[current_range_indices] = current_band
-                i += 1
-
-
-        # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess, self.std_limits , self.cf_bounds = self._drop_peak_cf(guess)
-        guess ,  self.std_limits , self.cf_bounds = self._drop_peak_overlap(guess)
-        # If there are peak guesses, fit the peaks, and sort results
-        if len(guess) > 0:
-            gaussian_params = self._fit_peak_guess(guess)
-
-            gaussian_params = gaussian_params[gaussian_params[:, 0].argsort()]
-        else:
-            gaussian_params = np.empty([0, 3])
-
-        return gaussian_params
-
-    
-    
-    """ 
-    def _fit_peaks(self, flat_iter):
-        
-        Iteratively fit peaks to flattened spectrum.
-
-        Parameters
-        ----------
-        flat_iter : 1d array
-            Flattened power spectrum values.
-
-        Returns
-        -------
-        gaussian_params : 2d array
-            Parameters that define the gaussian fit(s).
-            Each row is a gaussian, as [mean, height, standard deviation].
-        
-        theta_range = [1, 15]
-        theta_harmonic_range = [9, 18]
-        sgamma_range = [18, 47]
-        electronic_noise_range = [45, 55]
-
-        list_of_ranges = [electronic_noise_range, theta_range, theta_harmonic_range, sgamma_range]   
-        list_of_thresholds = [4, 2, 4, 2] 
-        list_of_peak_widths = [[0.5, 3], [0.5, 4], [0.5, 4], [3, 20]]
-        
-        # Initialize matrix of guess parameters for gaussian fitting
-        guess = np.empty([0, 3])
-        # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
-        #   Stopping procedures: limit on # of peaks, or relative or absolute height thresholds
-        for current_range, current_threshold, current_width in zip(list_of_ranges, list_of_thresholds, list_of_peak_widths):
+        for allowed_range, current_range, current_threshold, current_width, abs_threshold in zip(allowed_ranges, list_of_ranges, list_of_thresholds, list_of_peak_widths, abs_thresholds):
             current_range_indeces = (self.freqs >= current_range[0]) & (self.freqs <= current_range[1])
             current_band = flat_iter[current_range_indeces]
             current_freqs = self.freqs[current_range_indeces]
-            # Find candidate peak - the maximum point of the flattened spectrum
-            max_ind = np.argmax(current_band)
+
+            #new change for better peak estimation
+            allowed_range_indeces = (self.freqs >= allowed_range[0]) & (self.freqs <= allowed_range[1])
+            allowed_band = flat_iter[allowed_range_indeces]
+            allowed_freqs = self.freqs[allowed_range_indeces]
+            max_ind = np.argmax(allowed_band)
+            guess_freq = allowed_freqs[max_ind]
+            max_ind = int(np.round((guess_freq - current_range[0])/self.freq_res))
             max_height = current_band[max_ind]
+            guess_height = max_height
+            guess_freq = current_freqs[max_ind]
 
             # Stop searching for peaks once height drops below height threshold
             if max_height <= current_threshold * np.std(current_band):
                 continue
+            if not guess_height > abs_threshold: # if 0 -> not absolute threshold
+                continue 
 
-            # Set the guess parameters for gaussian fitting, specifying the mean and height
-            guess_freq = current_freqs[max_ind]
-            guess_height = max_height
-
-            # Halt fitting process if candidate peak drops below minimum height
-            if not guess_height > self.min_peak_height:
-                continue          
-
-            # Data-driven first guess at standard deviation
-            #   Find half height index on each side of the center frequency
             half_height = 0.5 * max_height
-            le_ind = next((val for val in range(max_ind - 1, 0, -1)
-                            if current_band[val] <= half_height), None)
-            ri_ind = next((val for val in range(max_ind + 1, len(current_band), 1)
-                            if current_band[val] <= half_height), None)
+            le_ind = next((val for val in range(max_ind - 1, 0, -1) if current_band[val] <= half_height), None)
+            ri_ind = next((val for val in range(max_ind + 1, len(current_band), 1) if current_band[val] <= half_height), None)
 
             # Guess bandwidth procedure: estimate the width of the peak
             try:
@@ -1631,134 +1768,30 @@ class FOOOF():
                 #   and use this to estimate that guess for gaussian standard deviation
                 fwhm = short_side * 2 * self.freq_res
                 guess_std = compute_gauss_std(fwhm)
-
             except ValueError:
                 # This procedure can fail (very rarely), if both left & right inds end up as None
                 #   In this case, default the guess to the average of the peak width limits
-                guess_std = np.mean(current_width)
-
+                guess_std = np.mean(current_width)  
             # Check that guess value isn't outside preset limits - restrict if so
             #   Note: without this, curve_fitting fails if given guess > or < bounds
-            if current_range == theta_range:
-                if guess_freq > 6.5:
-                    theta_harmonic_range[0]= 12
-                    
-            elif current_range == theta_harmonic_range:
-                current_width[1] = 20 - guess_freq
-                
-            if guess_std < current_width[0]:
-                guess_std = current_width[0]
-            if guess_std > current_width[1]:
-                guess_std = current_width[1]
+            if guess_std < current_width[0]/2:
+                guess_std = current_width[0]/2
 
+            if guess_std > current_width[1]/2:
+                guess_std = current_width[1]/2
+
+            gauss_limit = [0,0]
+            gauss_limit[0] = current_width[0]/2
+            gauss_limit[1] = current_width[1]/2
+            self.std_limits = np.vstack((self.std_limits, gauss_limit))
+            self.cf_bounds = np.vstack((self.cf_bounds, allowed_range))
             # Collect guess parameters and subtract this guess gaussian from the data
             guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
             peak_gauss = gaussian_function(current_freqs, guess_freq, guess_height, guess_std)
             current_band = current_band - peak_gauss
             flat_iter[current_range_indeces] = current_band
 
-#######################################changed################################################################################       
-
         # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess = self._drop_peak_cf(guess)
-        guess = self._drop_peak_overlap(guess)
-
-        # If there are peak guesses, fit the peaks, and sort results
-        if len(guess) > 0:
-            gaussian_params = self._fit_peak_guess(guess)
-            gaussian_params = gaussian_params[gaussian_params[:, 0].argsort()]
-        else:
-            gaussian_params = np.empty([0, 3])
-        print(gaussian_params)
-        return gaussian_params
-    
-    
-   
-   
-   
-   
-    
-    def _fit_peaks(self, flat_iter):
-        
-        Iteratively fit peaks to flattened spectrum.
-        
-        Parameters
-        ----------
-        flat_iter : 1d array
-            Flattened power spectrum values.
-
-        Returns
-        -------
-        gaussian_params : 2d array
-            Parameters that define the gaussian fit(s).
-            Each row is a gaussian, as [mean, height, standard deviation].
-        
-
-        # Initialize matrix of guess parameters for gaussian fitting
-        guess = np.empty([0, 3])
-
-        # Find peak: Loop through, finding a candidate peak, and fitting with a guess gaussian
-        #   Stopping procedures: limit on # of peaks, or relative or absolute height thresholds
-        while len(guess) < self.max_n_peaks:
-
-            # Find candidate peak - the maximum point of the flattened spectrum
-            max_ind = np.argmax(flat_iter)
-            max_height = flat_iter[max_ind]
-
-            # Stop searching for peaks once height drops below height threshold
-            if max_height <= self.peak_threshold * np.std(flat_iter):
-                break
-
-            # Set the guess parameters for gaussian fitting, specifying the mean and height
-            guess_freq = self.freqs[max_ind]
-            guess_height = max_height
-
-            # Halt fitting process if candidate peak drops below minimum height
-            if not guess_height > self.min_peak_height:
-                break
-
-            # Data-driven first guess at standard deviation
-            #   Find half height index on each side of the center frequency
-            half_height = 0.5 * max_height
-            le_ind = next((val for val in range(max_ind - 1, 0, -1)
-                           if flat_iter[val] <= half_height), None)
-            ri_ind = next((val for val in range(max_ind + 1, len(flat_iter), 1)
-                           if flat_iter[val] <= half_height), None)
-
-            # Guess bandwidth procedure: estimate the width of the peak
-            try:
-                # Get an estimated width from the shortest side of the peak
-                #   We grab shortest to avoid estimating very large values from overlapping peaks
-                # Grab the shortest side, ignoring a side if the half max was not found
-                short_side = min([abs(ind - max_ind) \
-                    for ind in [le_ind, ri_ind] if ind is not None])
-
-                # Use the shortest side to estimate full-width, half max (converted to Hz)
-                #   and use this to estimate that guess for gaussian standard deviation
-                fwhm = short_side * 2 * self.freq_res
-                guess_std = compute_gauss_std(fwhm)
-
-            except ValueError:
-                # This procedure can fail (very rarely), if both left & right inds end up as None
-                #   In this case, default the guess to the average of the peak width limits
-                guess_std = np.mean(self.peak_width_limits)
-
-            # Check that guess value isn't outside preset limits - restrict if so
-            #   Note: without this, curve_fitting fails if given guess > or < bounds
-            if guess_std < self._gauss_std_limits[0]:
-                guess_std = self._gauss_std_limits[0]
-            if guess_std > self._gauss_std_limits[1]:
-                guess_std = self._gauss_std_limits[1]
-
-            # Collect guess parameters and subtract this guess gaussian from the data
-            guess = np.vstack((guess, (guess_freq, guess_height, guess_std)))
-            peak_gauss = gaussian_function(self.freqs, guess_freq, guess_height, guess_std)
-            flat_iter = flat_iter - peak_gauss
-
-        # Check peaks based on edges, and on overlap, dropping any that violate requirements
-        guess = self._drop_peak_cf(guess)
-        guess = self._drop_peak_overlap(guess)
-
         # If there are peak guesses, fit the peaks, and sort results
         if len(guess) > 0:
             gaussian_params = self._fit_peak_guess(guess)
@@ -1767,7 +1800,10 @@ class FOOOF():
             gaussian_params = np.empty([0, 3])
 
         return gaussian_params
-    """
+
+
+   
+
 
     def _fit_peak_guess(self, guess):
         """
@@ -1803,8 +1839,6 @@ class FOOOF():
                     for cf, peak, std_lim in zip(self.cf_bounds , guess, self.std_limits)]
 
         
-        
-
         # Check that CF bounds are within frequency range
         lo_bound = [bound if bound[0] > self.freq_range[0] else \
             [self.freq_range[0], *bound[1:]] for bound in lo_bound]
@@ -1816,6 +1850,19 @@ class FOOOF():
                             tuple(item for sublist in hi_bound for item in sublist))
 
         # Flatten guess, for use with curve fit
+
+        for a in range(0, len(guess)):
+            peak_a = guess[a]
+            hi_bound_a = hi_bound[a]
+            lo_bound_a = lo_bound[a]
+            for b in range(0, 3):
+                p_b = peak_a[b]
+                hi_b = hi_bound_a[b]
+                lo_b = lo_bound_a[b]
+                if p_b < lo_b:
+                    guess[a][b] = lo_b
+                if p_b > hi_b:
+                    guess[a][b] = hi_b
         guess_flat = np.ndarray.flatten(guess)
 
         # Check if the initial guess is within the bounds
@@ -2036,9 +2083,13 @@ class FOOOF():
         Which measure is applied is by default controlled by the `_error_metric` attribute.
         """
 
+        
         # If metric is not specified, use the default approach
         metric = self._error_metric if not metric else metric
-
+        if metric == 'AP':
+            self.error_ = np.abs(self.power_spectrum - self._ap_fit).mean()
+        if metric == 'AP_squared':
+            self.error_ = np.mean((self.power_spectrum - self._ap_fit)**2)
         if metric == 'MAE':
             self.error_ = np.abs(self.power_spectrum - self.fooofed_spectrum_).mean()
 
@@ -2048,9 +2099,6 @@ class FOOOF():
         elif metric == 'RMSE':
             self.error_ = np.sqrt(((self.power_spectrum - self.fooofed_spectrum_) ** 2).mean())
 
-        else:
-            error_msg = "Error metric '{}' not understood or not implemented.".format(metric)
-            raise ValueError(error_msg)
 
 
     def _prepare_data(self, freqs, power_spectrum, freq_range, spectra_dim=1):
@@ -2114,6 +2162,8 @@ class FOOOF():
             power_spectrum = power_spectrum.astype('float64')
 
         # Check frequency range, trim the power_spectrum range if requested
+        power_spectrum = self.rem_electric_noise(power_spectrum , freqs)
+
         if freq_range:
             freqs, power_spectrum = trim_spectrum(freqs, power_spectrum, freq_range)
 
