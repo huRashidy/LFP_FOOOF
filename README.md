@@ -64,7 +64,7 @@ Matplotlib (for visualization)
 
 To use the modified FOOOF toolbox, replace the original files in the FOOOF library with the modified versions provided in this repository. Follow these steps:
 
-1. **Locate the FOOOF Library**:
+1. Locate the FOOOF Library:
    - If you have installed the FOOOF library, you can find its location by running the following command in Python:
      ```python
      import specparam
@@ -72,21 +72,21 @@ To use the modified FOOOF toolbox, replace the original files in the FOOOF libra
      ```
    - This will print the path to the FOOOF library. Navigate to the parent directory of this path.
 
-2. **Replace `fit.py`**:
+2. Replace `fit.py`:
    - Copy the modified `fit.py` file from `FOOOF codes/fit.py` in this repository.
    - Paste it into the `objs` folder of the FOOOF library, replacing the original file:
      ```
      FOOOF/specparam/objs/fit.py
      ```
 
-3. **Replace `funcs.py`**:
+3. Replace `funcs.py`:
    - Copy the modified `funcs.py` file from `FOOOF codes/funcs.py` in this repository.
    - Paste it into the `core` folder of the FOOOF library, replacing the original file:
      ```
      FOOOF/specparam/core/funcs.py
      ```
 
-4. **Verify the Changes**:
+4. Verify the Changes:
    - After replacing the files, restart your Python environment or kernel to ensure the changes take effect.
    - Test the modified FOOOF toolbox by running the example notebook provided in the `Fitting examples/` folder.
 
