@@ -177,9 +177,8 @@ def three_exponents(xs, *params):
         flat_freq_copy = flat_freq.copy()
         knee = flat_freq_copy
         flat_freq = knee_copy
-    ys = offset - exp2*((np.log10(flat_freq)-np.log10(knee))/2) + np.log10(10**((exp3-(exp2/2))*(np.log10(flat_freq)-np.log10(xs))) + 10**(((exp2*(np.log10(xs)-np.log10(exp2)))/(-2)))) - np.log10(10**(((exp2*(np.log10(knee)-np.log10(xs)))/(-2))) + 10**((exp1-(exp2/2))*(np.log10(xs)-np.log10(knee))))
+    ys = offset - exp2*((np.log10(flat_freq)-np.log10(knee))/2) + np.log10(10**((exp3-(exp2/2))*(np.log10(flat_freq)-np.log10(xs))) + 10**(((exp2*(np.log10(xs)-np.log10(flat_freq)))/(-2)))) - np.log10(10**(((exp2*(np.log10(knee)-np.log10(xs)))/(-2))) + 10**((exp1-(exp2/2))*(np.log10(xs)-np.log10(knee))))
     return ys
-
 
 def linear_function(xs, *params):
     """Linear fitting function.
