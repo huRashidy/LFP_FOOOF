@@ -970,11 +970,11 @@ class FOOOF():
         """
         #guess parameters for 1exp and flat+1exp
         off_guess = [power_spectrum[0] if not self._ap_guess[0] else self._ap_guess[0]]
-        kne_guess = [self._ap_guess[1]] if self.aperiodic_mode == 'knee_1exp' else []
+        kne_guess = [self._ap_guess[1]] if self.aperiodic_mode == 'flat_1exp' else []
         exp_guess = [np.abs((self.power_spectrum[-1] - self.power_spectrum[0]) /
                             (np.log10(self.freqs[-1]) - np.log10(self.freqs[0])))
                      if not self._ap_guess[2] else self._ap_guess[2]]
-        
+
         if self.aperiodic_mode == 'fixed' or self.aperiodic_mode == 'flat_1exp':
             if self.aperiodic_mode == 'flat_1exp':
                 ap_bounds = ((-np.inf, self.freq_range[0], 0), (np.inf, self.freq_range[1], np.inf)) 
@@ -997,7 +997,7 @@ class FOOOF():
                 error_msg = "Model fitting failed due to not finding parameters in the simple aperiodic component fit."
                 raise FitError(error_msg) from excp
 
-        if self.aperiodic_mode == '2exp':
+        elif self.aperiodic_mode == '2exp':
             # Select subregion of PSD
             f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
             freqs = freqs[f_mask]
@@ -1092,7 +1092,7 @@ class FOOOF():
                 aperiodic_params[2] = exp2_copy
                 aperiodic_params[3] = exp1_copy
 
-        if self.aperiodic_mode == "2exp_flat":
+        elif self.aperiodic_mode == "2exp_flat":
             f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
             freqs = freqs[f_mask]
             power_spectrum = power_spectrum[f_mask]
@@ -1201,7 +1201,7 @@ class FOOOF():
                 aperiodic_params[2] = knee_copy
 
             
-        if self.aperiodic_mode == "3exp":
+        elif self.aperiodic_mode == "3exp":
             f_mask = np.logical_and(freqs >= self.freq_range[0], freqs <= self.freq_range[1])
             freqs = freqs[f_mask]
             power_spectrum = power_spectrum[f_mask]
