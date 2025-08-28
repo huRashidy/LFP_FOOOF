@@ -50,8 +50,8 @@ def expo_nk_function(xs, *params):
     xs : 1d array
         Input x-axis values.
     *params : float
-        Parameters (offset, exp) that define Lorentzian function:
-        y = 10^off * (1/(x^exp))
+        Parameters (offset, exp) that define Lorentzian function across :
+        L = offset - log(f^exp)
 
     Returns
     -------
@@ -75,7 +75,7 @@ def expo_function(xs, *params):
         Input x-axis values.
     *params : float
         Parameters (offset, knee, exp) that define Lorentzian function:
-        y = 10^offset * (1/(knee + x^exp))
+        L = offset - log(1+(f/knee)^exp)
 
     Returns
     -------
@@ -99,9 +99,9 @@ def two_exp(xs, *params):
     xs : 1d array
         Input x-axis values.
     *params : float
-        Parameters (offset, 1st exponent, knee frequency, 2nd exponent, flattening frequency) that define the function:
+        Parameters (offset, 1st exponent (n1), knee, 2nd exponent (n2)) that define the function:
 
-        y = offset - log10((x/knee)^n1 + (x/knee)^n2) 
+        L = offset - log((f/knee)^n1 + (f/knee)^n2) 
 
     Returns
     -------
