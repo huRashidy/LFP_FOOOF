@@ -50,7 +50,7 @@ def expo_nk_function(xs, *params):
     xs : 1d array
         Input x-axis values.
     *params : float
-        Parameters (offset, exp) that define Lorentzian function across :
+        Parameters (offset, exp) that define Lorentzian function across frequencies f:
         L = offset - log(f^exp)
 
     Returns
@@ -109,7 +109,7 @@ def two_exp(xs, *params):
         Output values for 2 exponents function.
     """
     
-    knee_off, knee, exp1, exp2 = params
+    knee_off, knee, exp1, exp2 = params     # offset = power at knee frequency
     ys = knee_off - np.log10(10**(exp1*(np.log10(xs)-np.log10(knee))) + 10**(exp2*(np.log10(xs)-np.log10(knee)))) 
     return ys
 
@@ -124,9 +124,10 @@ def two_exp_flattening(xs, *params):
     xs : 1d array
         Input x-axis values.
     *params : float
-        Parameters (offset, 1st exponent, knee frequency, 2nd exponent, flattening frequency) that define the function:
-
-        y = offset - log10((x/knee)^n1 + (x/knee)^n2) + log10((x/knee)^n2 + flattening_freq)
+        Parameters (offset, 1st exponent (n1), knee, 2nd exponent (n2), kprime) that define the function:
+        where abs(kprime/n2) + knee = flat_fr i.e. flattening frequency
+        
+        y = offset - log10((f/knee)^n1 + (f/knee)^n2) + log10((f/knee)^n2 + kprime)
 
 
     Returns
@@ -136,7 +137,7 @@ def two_exp_flattening(xs, *params):
     """
 
     
-    offset, knee, flat_fr, exp1, exp2 = params    # o = power at z1;  z1 = knee_freq; z2 = flat_fr; d1 = exp1, d2 = exp2
+    offset, knee, flat_fr, exp1, exp2 = params    # offset = power at z1;  z1 = knee_freq; z2 = flat_fr; d1 = exp1, d2 = exp2
     if knee > flat_fr:
         knee_copy = knee.copy()
         flat_fr_copy = flat_fr.copy()
@@ -160,7 +161,7 @@ def three_exponents(xs, *params):
     *params : float
         Parameters (offset, 1st exponent, knee frequency, 2nd exponent, flattening frequency) that define the function:
 
-        Y = b - log((xs/knee)^(-s2) + (xs/knee)^(s3)) + log((xs/flat_freq)^(-s1) + (xs/flat_freq)^s2)
+        Y = offset - log((xs/knee)^(-s2) + (xs/knee)^(s3)) + log((xs/flat_freq)^(-s1) + (xs/flat_freq)^s2)
         where:
         exp1 = s1 - s2
         exp2 = s1 + s3
