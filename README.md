@@ -56,7 +56,7 @@ cd your-repo
 ### 2. Install Dependencies
 Ensure you have the following dependencies installed:
 Python 3.7+
-FOOOF
+FOOOF 1.1.0
 NumPy
 SciPy
 Matplotlib (for visualization)
@@ -68,8 +68,8 @@ To use the modified FOOOF toolbox, replace the original files in the FOOOF libra
 1. Locate the FOOOF Library:
    - If you have installed the FOOOF library, you can find its location by running the following command in Python:
      ```python
-     import specparam
-     print(specparam.__file__)
+     import fooof
+     print(fooof.__file__)
      ```
    - This will print the path to the FOOOF library. Navigate to the parent directory of this path.
 
