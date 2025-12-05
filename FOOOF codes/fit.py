@@ -1741,7 +1741,7 @@ class FOOOF():
             allowed_freqs = self.freqs[allowed_range_indeces]
             max_ind = np.argmax(allowed_band)
             guess_freq = allowed_freqs[max_ind]
-            max_ind = int(np.round((guess_freq - current_range[0])/self.freq_res))
+            max_ind = int(np.round((guess_freq - current_range[0])/self.freq_res)-1)
             max_height = current_band[max_ind]
             guess_height = max_height
             guess_freq = current_freqs[max_ind]
