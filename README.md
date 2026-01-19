@@ -60,6 +60,7 @@ FOOOF 1.1.0
 NumPy
 SciPy
 Matplotlib (for visualization)
+statsmodels
 
 ### 3. Replace the FOOOF Files
 
