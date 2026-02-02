@@ -17,13 +17,19 @@ The repository is organized as follows:
 
 │ └── Example_fitting.ipynb # Jupyter notebook for analyzing CA1 and DG LFP recordings
 
-├── FOOOF codes/ # Modified FOOOF toolbox
 
+├── FOOOF codes/ # Modified FOOOF toolbox
 
 │ ├── funcs.py # Modified helper functions (originally in specparam/core)
 
 │ └── fit.py # Modified fitting functionality (originally in specparam/objs)
 
+
+├── Simulations/ # simulations used in the publication
+
+│ ├── Figure_1c.m # Full example script that was used to generate Figure 1c, including generation of full powerspectra
+
+│ └── rem_noise.m # Helper function used in Figure_1c.m
 
 ├── README.md # This file
 
