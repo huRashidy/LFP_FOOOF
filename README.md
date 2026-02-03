@@ -84,14 +84,14 @@ To use the modified FOOOF toolbox, replace the original files in the FOOOF libra
    - Copy the modified `fit.py` file from `FOOOF codes/fit.py` in this repository.
    - Paste it into the `objs` folder of the FOOOF library, replacing the original file:
      ```
-     FOOOF/specparam/objs/fit.py
+     FOOOF/objs/fit.py
      ```
 
 3. Replace `funcs.py`:
    - Copy the modified `funcs.py` file from `FOOOF codes/funcs.py` in this repository.
    - Paste it into the `core` folder of the FOOOF library, replacing the original file:
      ```
-     FOOOF/specparam/core/funcs.py
+     FOOOF/core/funcs.py
      ```
 
 4. Verify the Changes:
