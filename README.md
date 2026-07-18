@@ -55,8 +55,8 @@ We made the following critical modifications to the FOOOF toolbox:
 ```bash
 
 ### 1. Clone the Repository
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
+git clone https://github.com/huRashidy/LFP_FOOOF.git
+cd LFP_FOOOF 
 
 
 ### 2. Install Dependencies
